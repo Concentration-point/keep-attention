@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-/// 应用视图模型：一次 tick = 采集 → 去重 → 总结 → 发布（spec §2/§3 编排）。
+/// 应用视图模型：一次 tick = 采集 Orca hook → 结构化结果去重 → 总结 → 发布。
 @MainActor
 @Observable
 public final class AppModel {
@@ -31,9 +31,6 @@ public final class AppModel {
 
     static let pollIntervalKey = "pollIntervalSeconds"
     static let defaultPollInterval: Double = 5
-    /// 单次 tick 最多读取的终端数（防终端数失控）。
-    static let maxReadsPerTick = 32
-
     public private(set) var displays: [TerminalDisplay] = []
     public private(set) var focusedHandle: String?
     public private(set) var orcaError: String?
@@ -53,15 +50,20 @@ public final class AppModel {
     private let defaults: DefaultsStoring
     private let onPollIntervalChanged: (@MainActor () -> Void)?
 
-    /// handle → 内容指纹（去重键）
+    /// handle → 结构化 agent result 指纹（去重键）
     private var fingerprints: [String: String] = [:]
     /// handle → 缓存摘要（指纹未变时复用，不重复烧 API）
     private var summaries: [String: TerminalSummary] = [:]
-    /// handle → 最近一次渲染 tail（供忙闲启发式跨 tick 复用）
-    private var tails: [String: [String]] = [:]
-    /// 上一 tick 已知等待输入的终端（本 tick 继续读取刷新）
-    private var waitingHandles: Set<String> = []
     private var isTicking = false
+    /// cwd → TraeX hook 会话状态（TraeX 是 Orca agents[] 之外的结构化输入源）
+    private var traexStates: [String: TraeXSessionState] = [:]
+
+    /// TraeX hook 会话状态：working 表示当前请求处理中，lastAssistantMessage 是最近完整回复。
+    private struct TraeXSessionState {
+        var prompt: String?
+        var working: Bool
+        var lastAssistantMessage: String?
+    }
 
     public init(
         orca: OrcaClient,
@@ -82,6 +84,29 @@ public final class AppModel {
         self.orca = orca
     }
 
+    // MARK: - TraeX hook 事件（新结构化输入源，Orca agents[] 行为保持优先）
+
+    /// 接收 TraeX hook 事件并立即重算显示。
+    /// UserPromptSubmit → 显示正在处理当前请求；Stop → last_assistant_message 走既有总结/去重管线。
+    public func applyTraeXEvent(_ event: TraeXEvent) async {
+        guard event.isSupported, let cwd = event.cwd, !cwd.isEmpty else { return }
+        var state = traexStates[cwd] ?? TraeXSessionState(prompt: nil, working: false, lastAssistantMessage: nil)
+        switch event.hookEventName {
+        case TraeXEvent.userPromptSubmit:
+            state.prompt = Self.trimmedStatic(event.prompt)
+            state.working = true
+        case TraeXEvent.stop:
+            state.working = false
+            if let message = Self.trimmedStatic(event.lastAssistantMessage), !message.isEmpty {
+                state.lastAssistantMessage = message
+            }
+        default:
+            return
+        }
+        traexStates[cwd] = state
+        await tick()
+    }
+
     // MARK: - 派生视图状态
 
     /// 最紧急的等待终端（lastOutputAt 最久未更新者，spec §4 抢显）。
@@ -95,11 +120,76 @@ public final class AppModel {
         displays.filter { $0.status == .waitingForInput }.count
     }
 
-    /// 药丸默认展示：抢显等待终端 > 焦点终端 > 任意终端。
+    /// 药丸默认展示：抢显等待终端 > 已有结构化结果的终端 > 焦点终端 > 任意终端。
     public var pillDisplay: TerminalDisplay? {
         mostUrgentWaiting
+            ?? displays.first { $0.summary.hasStructuredResult }
             ?? displays.first { $0.handle == focusedHandle }
             ?? displays.first
+    }
+
+    // MARK: - attention 排序与聚合（issue #12）
+
+    /// attention 排序优先级：等待输入(0) > 有结构化结果(1) > 普通 busy(2) > idle/无输出(3)。
+    static func attentionRank(_ display: TerminalDisplay) -> Int {
+        if display.status == .waitingForInput { return 0 }
+        if display.summary.hasStructuredResult { return 1 }
+        if display.status == .busy { return 2 }
+        return 3
+    }
+
+    /// 按 attention 优先级排序的终端列表；同组内保持 displays 原序，避免 UI 抖动。
+    public var attentionDisplays: [TerminalDisplay] {
+        Self.sortByAttentionPreservingOriginalOrder(displays)
+    }
+
+    static func sortByAttentionPreservingOriginalOrder(_ displays: [TerminalDisplay]) -> [TerminalDisplay] {
+        displays.enumerated()
+            .sorted { lhs, rhs in
+                let leftRank = Self.attentionRank(lhs.element)
+                let rightRank = Self.attentionRank(rhs.element)
+                if leftRank != rightRank { return leftRank < rightRank }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    /// live terminal 总数（collapsed pill 聚合徽标，issue #12）。
+    public var totalTerminalCount: Int {
+        displays.count
+    }
+
+    // MARK: - 详情选择（issue #13）
+
+    /// 展开面板详情目标：用户点击的 handle 命中则保持选择；未选择或 terminal 消失时回退 fallback。
+    /// 纯查询，不触发任何总结调用。
+    public static func resolveDetailDisplay(
+        selectedHandle: String?,
+        displays: [TerminalDisplay],
+        fallback: TerminalDisplay?
+    ) -> TerminalDisplay? {
+        guard let selectedHandle else { return fallback }
+        return displays.first { $0.handle == selectedHandle } ?? fallback
+    }
+
+    /// 值得注意的终端数：等待输入或有结构化结果。
+    public var attentionCount: Int {
+        displays.filter { Self.attentionRank($0) <= 1 }.count
+    }
+
+    // MARK: - 跳转到终端（issue #15）
+
+    /// 跳转专用的轻量错误文案；独立于 orcaError（后者只反映采集通道状态）。
+    public private(set) var jumpError: String?
+
+    /// 调 `orca terminal switch` 切回对应终端；成功清空错误，失败设置轻量文案，不崩溃。
+    public func jumpToTerminal(handle: String) async {
+        do {
+            try await orca.terminalSwitch(handle: handle)
+            jumpError = nil
+        } catch {
+            jumpError = "跳转失败，稍后重试"
+        }
     }
 
     // MARK: - 一次采集
@@ -120,6 +210,15 @@ public final class AppModel {
         }
     }
 
+    private struct AgentBinding {
+        let worktreeId: String
+        let agent: AgentInfo
+    }
+
+    private static let workingAgentStates: Set<String> = [
+        "working", "running", "thinking", "streaming", "in_progress", "in-progress", "busy",
+    ]
+
     private func process(ps: WorktreePSResult, list: TerminalListResult) async {
         let worktreeById = Dictionary(ps.worktrees.map { ($0.worktreeId, $0) },
                                       uniquingKeysWith: { a, _ in a })
@@ -131,34 +230,26 @@ public final class AppModel {
         let focus = resolver.focusedHandle()
         focusedHandle = focus
 
-        // 读取集合：焦点终端 + 等待态 agent 所在 worktree 的终端 + 上一 tick 已知等待
-        var readSet = Set<String>()
-        if let focus { readSet.insert(focus) }
-        for w in ps.worktrees {
-            let hasWaitingAgent = (w.agents ?? []).contains {
-                StatusResolver.waitingStates.contains($0.state?.lowercased() ?? "")
-            }
-            if hasWaitingAgent {
-                for t in list.terminals where t.worktreeId == w.worktreeId {
-                    readSet.insert(t.handle)
+        let agentByPaneKey = Dictionary(
+            ps.worktrees.flatMap { w in
+                (w.agents ?? []).compactMap { agent -> (String, AgentBinding)? in
+                    guard let paneKey = agent.paneKey, !paneKey.isEmpty else { return nil }
+                    return (Self.agentLookupKey(worktreeId: w.worktreeId, paneKey: paneKey), AgentBinding(worktreeId: w.worktreeId, agent: agent))
                 }
-            }
-        }
-        readSet.formUnion(waitingHandles)
-        let handlesToRead = Array(readSet.prefix(Self.maxReadsPerTick))
+            },
+            uniquingKeysWith: { a, _ in a }
+        )
 
-        let newTails = await readTails(handles: handlesToRead)
-        for (handle, tail) in newTails { tails[handle] = tail }
-
-        // 组装全部终端的展示状态
         let now = Date()
+        let traexByHandle = traexTargets(ps: ps, list: list, focus: focus, agentByPaneKey: agentByPaneKey)
         displays = list.terminals.map { t in
             let w = t.worktreeId.flatMap { worktreeById[$0] }
+            let agent = matchedAgent(for: t, in: agentByPaneKey)?.agent
             let status = StatusResolver.resolve(StatusInput(
-                agentStates: (w?.agents ?? []).compactMap(\.state),
+                agentStates: agent.flatMap { [$0.state].compactMap { $0 } } ?? [],
                 worktreeStatus: w?.status,
                 lastOutputAt: t.lastOutputDate,
-                tail: tails[t.handle],
+                tail: nil,
                 now: now
             ))
             return TerminalDisplay(
@@ -168,38 +259,69 @@ public final class AppModel {
                 branch: t.shortBranch ?? w?.shortBranch,
                 title: t.title,
                 status: status,
-                summary: .loading,
+                summary: initialSummary(for: t, agent: agent, traex: traexByHandle[t.handle]),
                 lastOutputAt: t.lastOutputDate,
                 updatedAt: nil
             )
         }
 
-        // 总结集合：焦点 + 全部等待中的终端（指纹去重后才真正调 API）
-        let waitingNow = displays.filter { $0.status == .waitingForInput }.map(\.handle)
-        waitingHandles = Set(waitingNow)
-        var summarizeSet = Set(waitingNow)
-        if let focus { summarizeSet.insert(focus) }
+        for t in list.terminals {
+            guard let binding = matchedAgent(for: t, in: agentByPaneKey),
+                  let idx = displays.firstIndex(where: { $0.handle == t.handle })
+            else { continue }
+            let agent = binding.agent
+            guard !Self.isWorking(agent.state),
+                  let message = trimmed(agent.lastAssistantMessage),
+                  !message.isEmpty
+            else { continue }
 
-        for handle in summarizeSet {
-            guard let idx = displays.firstIndex(where: { $0.handle == handle }) else { continue }
-            let t = list.terminals.first { $0.handle == handle }
-            let w = t?.worktreeId.flatMap { worktreeById[$0] }
-            let agents = w?.agents ?? []
-            let agentMessage = agents.compactMap(\.lastAssistantMessage).last
-                ?? agents.compactMap(\.taskTitle).last
-            let tail = tails[handle] ?? []
-            let fingerprint = contentFingerprint([agentMessage ?? ""] + tail)
-
-            if fingerprint == fingerprints[handle], let cached = summaries[handle] {
+            let fingerprint = contentFingerprint([binding.worktreeId, agent.paneKey ?? "", message])
+            if fingerprint == fingerprints[t.handle], let cached = summaries[t.handle] {
                 displays[idx].summary = .ready(cached)
                 continue
             }
+
+            displays[idx].summary = .loading
             let context = SummaryContext(
                 repo: displays[idx].repo,
                 branch: displays[idx].branch,
                 title: displays[idx].title,
-                agentMessage: agentMessage,
-                tail: tail
+                agentMessage: Self.summaryMessage(for: agent, message: message),
+                tail: []
+            )
+            do {
+                let summary = try await summarizer.summarize(context: context)
+                fingerprints[t.handle] = fingerprint
+                summaries[t.handle] = summary
+                displays[idx].summary = .ready(summary)
+                displays[idx].updatedAt = Date()
+            } catch {
+                displays[idx].summary = .failed(Self.describeSummaryError(error))
+                displays[idx].updatedAt = Date()
+            }
+        }
+
+        // TraeX hook 源：Stop 的 last_assistant_message 走与 Orca 相同的总结/去重管线。
+        for (handle, state) in traexByHandle {
+            guard let idx = displays.firstIndex(where: { $0.handle == handle }),
+                  !state.working,
+                  let message = state.lastAssistantMessage,
+                  !message.isEmpty
+            else { continue }
+
+            let fingerprint = contentFingerprint(["traex", handle, message])
+            if fingerprint == fingerprints[handle], let cached = summaries[handle] {
+                displays[idx].summary = .ready(cached)
+                continue
+            }
+
+            displays[idx].summary = .loading
+            let context = SummaryContext(
+                repo: displays[idx].repo,
+                branch: displays[idx].branch,
+                title: displays[idx].title,
+                agentMessage: Self.traexSummaryMessage(prompt: state.prompt, message: message),
+                tail: []
             )
             do {
                 let summary = try await summarizer.summarize(context: context)
@@ -208,34 +330,103 @@ public final class AppModel {
                 displays[idx].summary = .ready(summary)
                 displays[idx].updatedAt = Date()
             } catch {
-                // 失败不记录指纹 → 下一 tick 自动重试（spec §3 稍后重试）
                 displays[idx].summary = .failed(Self.describeSummaryError(error))
                 displays[idx].updatedAt = Date()
             }
         }
     }
 
-    /// 并行读取多个终端的渲染 tail；单个失败只跳过该终端。
-    private func readTails(handles: [String]) async -> [String: [String]] {
-        guard !handles.isEmpty else { return [:] }
-        let client = orca
-        return await withTaskGroup(of: (String, [String]?).self) { group in
-            for handle in handles {
-                group.addTask {
-                    do {
-                        let read = try await client.terminalRead(handle: handle)
-                        return (handle, read.tail)
-                    } catch {
-                        return (handle, nil)
-                    }
-                }
+    private func matchedAgent(for terminal: TerminalInfo, in agentByPaneKey: [String: AgentBinding]) -> AgentBinding? {
+        guard let worktreeId = terminal.worktreeId,
+              let tabId = terminal.tabId,
+              let leafId = terminal.leafId
+        else { return nil }
+        return agentByPaneKey[Self.agentLookupKey(worktreeId: worktreeId, paneKey: "\(tabId):\(leafId)")]
+    }
+
+    /// cwd → 焦点（否则首个）terminal 的映射；该 terminal 已有 orca agent 匹配时丢弃（Orca 优先）。
+    private func traexTargets(
+        ps: WorktreePSResult,
+        list: TerminalListResult,
+        focus: String?,
+        agentByPaneKey: [String: AgentBinding]
+    ) -> [String: TraeXSessionState] {
+        var targets: [String: TraeXSessionState] = [:]
+        for (cwd, state) in traexStates {
+            let worktreeIds = Set(ps.worktrees.filter { $0.path == cwd }.map(\.worktreeId))
+            let candidates = list.terminals.filter { t in
+                t.worktreePath == cwd || (t.worktreeId.map(worktreeIds.contains) ?? false)
             }
-            var result: [String: [String]] = [:]
-            for await (handle, tail) in group {
-                if let tail { result[handle] = tail }
-            }
-            return result
+            guard let target = candidates.first(where: { $0.handle == focus }) ?? candidates.first else { continue }
+            guard matchedAgent(for: target, in: agentByPaneKey) == nil else { continue }
+            targets[target.handle] = state
         }
+        return targets
+    }
+
+    private func initialSummary(for terminal: TerminalInfo, agent: AgentInfo?, traex: TraeXSessionState?) -> SummaryState {
+        if let agent {
+            guard let message = trimmed(agent.lastAssistantMessage), !message.isEmpty else {
+                if Self.isWorking(agent.state) { return .unavailable("Agent 正在执行，等待下一条完整回复") }
+                return .unavailable("暂无结构化 agent 输出")
+            }
+            let fingerprint = contentFingerprint([terminal.worktreeId ?? "", agent.paneKey ?? "", message])
+            if fingerprint == fingerprints[terminal.handle], let cached = summaries[terminal.handle] {
+                return .ready(cached)
+            }
+            if Self.isWorking(agent.state) { return .unavailable("Agent 正在执行，等待下一条完整回复") }
+            return .loading
+        }
+        // TraeX hook 源：仅当该 terminal 没有 orca agent 匹配时接管显示。
+        if let traex {
+            if traex.working { return .unavailable("TraeX 正在处理当前请求…") }
+            if let message = traex.lastAssistantMessage, !message.isEmpty {
+                let fingerprint = contentFingerprint(["traex", terminal.handle, message])
+                if fingerprint == fingerprints[terminal.handle], let cached = summaries[terminal.handle] {
+                    return .ready(cached)
+                }
+                return .loading
+            }
+        }
+        return .unavailable("未检测到结构化 agent 输出")
+    }
+
+    private static func summaryMessage(for agent: AgentInfo, message: String) -> String {
+        let request = trimmedStatic(agent.taskTitle) ?? trimmedStatic(agent.prompt)
+        guard let request, !request.isEmpty else { return message }
+        return """
+        用户请求：\(request)
+
+        Agent 回复：
+        \(message)
+        """
+    }
+
+    private static func traexSummaryMessage(prompt: String?, message: String) -> String {
+        guard let prompt, !prompt.isEmpty else { return message }
+        return """
+        用户请求：\(prompt)
+
+        Agent 回复：
+        \(message)
+        """
+    }
+
+    private static func agentLookupKey(worktreeId: String, paneKey: String) -> String {
+        "\(worktreeId)|\(paneKey)"
+    }
+
+    private static func isWorking(_ state: String?) -> Bool {
+        guard let state else { return false }
+        return workingAgentStates.contains(state.lowercased())
+    }
+
+    private static func trimmedStatic(_ text: String?) -> String? {
+        text?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func trimmed(_ text: String?) -> String? {
+        Self.trimmedStatic(text)
     }
 
     static func describe(_ error: Error) -> String {

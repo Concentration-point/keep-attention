@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

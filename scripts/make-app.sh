@@ -8,12 +8,14 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BINARY="$MACOS_DIR/keep-attention"
+HOOK_BINARY="$MACOS_DIR/keep-attention-hook"
 
 swift build -c release --package-path "$ROOT_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$ROOT_DIR/.build/arm64-apple-macosx/release/keep-attention" "$BINARY"
-chmod +x "$BINARY"
+cp "$ROOT_DIR/.build/arm64-apple-macosx/release/keep-attention-hook" "$HOOK_BINARY"
+chmod +x "$BINARY" "$HOOK_BINARY"
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

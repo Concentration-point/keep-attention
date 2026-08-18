@@ -1,13 +1,20 @@
 import SwiftUI
 import KeepAttentionCore
 
-/// 展开态：四段式面板（spec §4 展开态）。
+/// 展开态：四段式面板（spec §4 展开态）+ 全部 live terminals 列表（issue #11）。
+/// 点击列表行选中终端，详情区切换为该终端（issue #13）。
 struct IslandPanel: View {
     let display: AppModel.TerminalDisplay?
-    let otherWaitingCount: Int
+    let terminals: [AppModel.TerminalDisplay]
+    let focusedHandle: String?
+    var selectedHandle: String?
+    var otherWaitingCount: Int
     var namespace: Namespace.ID
     let onTogglePin: () -> Void
     let onCycleWaiting: () -> Void
+    var onSelectTerminal: (String) -> Void = { _ in }
+    var onJumpToTerminal: (String) -> Void = { _ in }
+    var jumpError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -23,12 +30,22 @@ struct IslandPanel: View {
                 }
                 Divider().opacity(0.5)
                 summaryBody(d)
+                jumpRow(d)
+                if !terminals.isEmpty {
+                    Divider().opacity(0.5)
+                    terminalList
+                }
             } else {
-                HStack {
+                VStack(spacing: 6) {
                     Image(systemName: "terminal")
+                        .font(.system(size: 18))
                         .foregroundStyle(.secondary)
-                    Text("暂无终端")
+                    Text("暂无 Orca live terminal")
+                        .font(.system(size: 12.5, weight: .medium))
+                    Text("启动或切换到 Orca 终端后，这里会显示当前状态。")
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 24)
@@ -98,23 +115,17 @@ struct IslandPanel: View {
 
     @ViewBuilder private func summaryBody(_ d: AppModel.TerminalDisplay) -> some View {
         switch d.summary {
+        case .unavailable(let message):
+            messageRow(icon: "info.circle", message: message)
         case .loading:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("正在总结…").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text("正在总结新结果…").font(.system(size: 12)).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 12)
         case .failed(let message):
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.secondary)
-                Text(message)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 12)
+            messageRow(icon: "exclamationmark.circle", message: message)
         case .ready(let s):
             VStack(alignment: .leading, spacing: 8) {
                 SectionRow(label: "当前任务", value: s.currentTask, highlight: false)
@@ -123,6 +134,85 @@ struct IslandPanel: View {
                 SectionRow(label: "需要你提供", value: s.needsInput, highlight: true)
             }
         }
+    }
+
+
+    // MARK: 全部终端列表（issue #11）
+
+    /// 所有 live terminals，包括无 agents[] 匹配的终端；纯展示，不触发总结。
+    private var terminalList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Live 终端 · \(terminals.count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if terminals.count > 8 {
+                    Text("可滚动")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(terminals) { t in
+                        Button {
+                            onSelectTerminal(t.handle)
+                        } label: {
+                            TerminalListRow(
+                                display: t,
+                                isFocused: t.handle == focusedHandle,
+                                isSelected: t.handle == selectedHandle
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 1)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: 192)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    // MARK: 跳转到终端（issue #15）
+
+    /// 详情区"跳转"操作。TerminalDisplay 无 connected 字段，terminal list 的输出即 live
+    /// terminals，这里对展示中的终端一律显示；点击列表行仍只选中，跳转必须走本按钮。
+    private func jumpRow(_ d: AppModel.TerminalDisplay) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                onJumpToTerminal(d.handle)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.right.circle")
+                    Text("跳转到终端")
+                }
+                .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .help("切换 Orca 到该终端")
+            if let jumpError {
+                Text(jumpError)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+        }
+    }
+
+    private func messageRow(icon: String, message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 12)
     }
 
     private func relativeTime(_ date: Date?, now: Date) -> String {
@@ -176,6 +266,118 @@ struct SectionRow: View {
                             : .clear
                     )
             )
+        }
+    }
+}
+
+/// 终端列表中的单行（issue #11）：状态点 + repo/branch + 焦点标记 + 摘要可用状态。
+/// 仅展示 TerminalDisplay 现有字段，不引入任何总结调用。
+/// isSelected 为详情区当前展示终端（issue #13 点击选中），与 focused（终端焦点）是两个概念。
+struct TerminalListRow: View {
+    let display: AppModel.TerminalDisplay
+    let isFocused: Bool
+    var isSelected: Bool = false
+
+    private var visualState: TerminalListVisualState {
+        TerminalListVisualState.resolve(status: display.status, summary: display.summary)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(stateColor)
+                .frame(width: 3, height: 28)
+            StatusDot(status: display.status)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(titleText)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if isFocused {
+                        Text("当前")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.accentColor.opacity(0.22)))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    Text(stateLabel)
+                        .font(.system(size: 9, weight: .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(stateColor.opacity(0.14)))
+                        .foregroundStyle(stateColor)
+                }
+                Text(summaryText)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(rowFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.45) : .clear)
+        )
+    }
+
+    /// 选中（详情区展示中）用 accent 填充+描边；焦点（终端在前台）保持原有浅填充。
+    private var rowFill: Color {
+        if isSelected { return Color.accentColor.opacity(0.16) }
+        if isFocused { return Color.primary.opacity(0.08) }
+        return stateColor.opacity(0.04)
+    }
+
+    /// branch 优先，缺失时退到 title（issue #11 行内容要求）。
+    private var titleText: String {
+        if let branch = display.branch?.trimmingCharacters(in: .whitespaces), !branch.isEmpty {
+            return "\(display.repo) · \(branch)"
+        }
+        if let title = display.title?.trimmingCharacters(in: .whitespaces), !title.isEmpty {
+            return "\(display.repo) · \(title)"
+        }
+        return display.repo
+    }
+
+    /// 摘要可用状态；unavailable 直接复用 SummaryState 携带的 UI 文案。
+    private var summaryText: String {
+        switch display.summary {
+        case .ready:
+            return "有结构化输出"
+        case .loading:
+            return "正在总结…"
+        case .failed:
+            return "总结失败"
+        case .unavailable(let message):
+            return message
+        }
+    }
+
+    private var stateLabel: String {
+        switch visualState {
+        case .waiting: return "等待"
+        case .newResult: return "新结果"
+        case .running: return "运行中"
+        case .idle: return "空闲"
+        case .unavailable: return "无 hook"
+        }
+    }
+
+    private var stateColor: Color {
+        switch visualState {
+        case .waiting: return .orange
+        case .newResult: return .blue
+        case .running: return .green
+        case .idle: return Color(white: 0.58)
+        case .unavailable: return Color(white: 0.45)
         }
     }
 }

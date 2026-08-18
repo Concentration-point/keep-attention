@@ -26,6 +26,7 @@ enum Fixtures {
             "preview": "Building…",
             "agents": [
               {
+                "paneKey": "tab2:leaf2",
                 "state": "working",
                 "agentType": "grok",
                 "prompt": "实现功能 X",
@@ -52,6 +53,7 @@ enum Fixtures {
             "preview": "Waiting…",
             "agents": [
               {
+                "paneKey": "tab3:leaf3",
                 "state": "done",
                 "agentType": "claude",
                 "prompt": "审查 PR",

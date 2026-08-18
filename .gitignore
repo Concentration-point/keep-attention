@@ -3,3 +3,5 @@
 *.xcodeproj/
 .swiftpm/
 *.app/
+.scratch/
+.trae/keep-attention.env

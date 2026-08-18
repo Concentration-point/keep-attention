@@ -30,10 +30,12 @@ struct StatusDot: View {
     }
 }
 
-/// 收起态：贴顶药丸（spec §4 收起态）。
+/// 收起态：贴顶药丸（spec §4 收起态）。徽标聚合多终端信号（issue #12）：
+/// 有等待时橙色显示"等待数/总数"，否则灰色显示总 terminal 数。
 struct IslandPill: View {
     let display: AppModel.TerminalDisplay?
     let waitingCount: Int
+    let totalTerminalCount: Int
     let hasError: Bool
     let errorMessage: String?
     var namespace: Namespace.ID
@@ -64,12 +66,21 @@ struct IslandPill: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             if waitingCount > 0 {
-                Text("\(waitingCount)")
+                Text("\(waitingCount)/\(totalTerminalCount)")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(Color.orange))
+                    .help("\(waitingCount) 个终端等待输入，共 \(totalTerminalCount) 个")
+            } else if totalTerminalCount > 0 {
+                Text("\(totalTerminalCount)")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(Color.primary.opacity(0.1)))
+                    .help("共 \(totalTerminalCount) 个终端")
             }
         } else if hasError {
             Image(systemName: "exclamationmark.triangle.fill")

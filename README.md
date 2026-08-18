@@ -65,3 +65,29 @@ open ./keep-attention.app
 
 - 轮询间隔默认 5 秒，可在展开面板设置中调整并持久化到 `UserDefaults`。
 - DeepSeek 模型固定为 `deepseek-v4-flash`，请求使用 JSON Output。
+
+## TraeX hook 集成
+
+项目内置 `keep-attention-hook` helper，可通过 `.trae/hooks.json` 接收 TraeX `UserPromptSubmit` / `Stop` 事件，让当前 TraeX 请求在浮层里显示“处理中”并在完整回复后触发摘要。
+
+首次使用项目级 hook：
+
+```sh
+cp .trae/keep-attention.env.example .trae/keep-attention.env
+./scripts/make-app.sh
+```
+
+然后编辑 `.trae/keep-attention.env`：
+
+```sh
+KEEP_ATTENTION_APP=/absolute/path/to/keep-attention.app
+KEEP_ATTENTION_SOCKET=/tmp/keep-attention-orca-keep-attention.sock
+```
+
+`.trae/keep-attention.env` 是本机路径配置，已被 `.gitignore` 忽略；不要提交。`.scratch/` 仅用于本地调试/研究资料，也不要提交。
+
+## 当前交互能力
+
+- 收起态 pill 显示当前最需要注意的终端，并用徽标表达终端总数或等待输入数量。
+- 展开态显示所有 Orca live terminals，按 attention 排序：等待输入、有结构化结果、运行中、空闲/无 hook。
+- 点击列表行可查看对应终端详情；点击“跳转到终端”会调用 `orca terminal switch --terminal <handle> --json` 切回 Orca 对应终端。

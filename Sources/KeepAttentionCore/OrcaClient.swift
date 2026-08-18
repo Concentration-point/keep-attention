@@ -36,11 +36,15 @@ public struct WorktreeInfo: Decodable, Equatable, Sendable {
 }
 
 public struct AgentInfo: Decodable, Equatable, Sendable {
+    var paneKey: String?
     var state: String?
     var agentType: String?
     var prompt: String?
     var taskTitle: String?
     var lastAssistantMessage: String?
+    var toolName: String?
+    var toolInput: String?
+    var updatedAt: Double?
 }
 
 // terminal list
@@ -152,6 +156,8 @@ public enum OrcaError: Error, Equatable {
     case missingBinary(String)
     case exit(Int32)
     case emptyOutput
+    /// 进程 exit 0 但信封 ok=false 的业务失败（如 terminal switch 的 terminal_handle_stale）。
+    case commandFailed(String?)
 }
 
 // MARK: - 客户端
@@ -218,6 +224,37 @@ public struct OrcaClient: Sendable {
             await runCLI(["terminal", "read", "--terminal", handle, "--json"])
         )
         return result.terminal
+    }
+
+    /// 跳转到指定终端（issue #15）：`terminal switch --terminal <handle> --json`。
+    /// 该命令业务失败时进程仍 exit 0，成败只看信封 ok 字段（见 decodeStatus）。
+    public func terminalSwitch(handle: String) async throws {
+        try Self.decodeStatus(await runCLI(["terminal", "switch", "--terminal", handle, "--json"]))
+    }
+
+    /// switch 类命令的结果信封：不消费 result 内容，只区分 ok / error。
+    private struct CLIStatusEnvelope: Decodable {
+        let ok: Bool
+        let error: CLIErrorInfo?
+    }
+
+    private struct CLIErrorInfo: Decodable {
+        let code: String?
+        let message: String?
+    }
+
+    /// 解析 ok/error 信封：ok=false → commandFailed；结构非法 → emptyOutput。
+    static func decodeStatus(_ data: Data) throws {
+        do {
+            let envelope = try JSONDecoder().decode(CLIStatusEnvelope.self, from: data)
+            guard envelope.ok else {
+                throw OrcaError.commandFailed(envelope.error?.message)
+            }
+        } catch let error as OrcaError {
+            throw error
+        } catch {
+            throw OrcaError.emptyOutput
+        }
     }
 
     /// 信封解包（也供测试直接喂样例 Data）。

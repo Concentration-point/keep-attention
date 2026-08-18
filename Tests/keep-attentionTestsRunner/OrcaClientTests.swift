@@ -107,4 +107,43 @@ import Foundation
         #expect(commands.contains(["terminal", "list", "--include-visual-layouts", "--json"]))
         #expect(commands.contains(["terminal", "read", "--terminal", "term_B1", "--json"]))
     }
+
+    // MARK: - terminal switch（issue #15）
+    // 真实行为：业务失败时进程仍 exit 0，成败只看信封 ok 字段（probe 自本机 orca CLI）。
+
+    @Test func terminalSwitchSendsHandleAndJSONFlag() async throws {
+        let recorder = LockedBox([[String]]())
+        let client = OrcaClient { args in
+            recorder.with { $0.append(args) }
+            return Fixtures.data(#"{"id":"cmd-s1","ok":true,"result":{}}"#)
+        }
+        try await client.terminalSwitch(handle: "term_B1")
+        #expect(recorder.with { $0 } == [["terminal", "switch", "--terminal", "term_B1", "--json"]])
+    }
+
+    @Test func terminalSwitchThrowsOnBusinessFailure() async throws {
+        let client = OrcaClient { _ in
+            Fixtures.data(#"{"id":"cmd-s2","ok":false,"error":{"code":"terminal_handle_stale","message":"terminal_handle_stale"}}"#)
+        }
+        do {
+            try await client.terminalSwitch(handle: "term_gone")
+            Issue.record("ok=false 应抛错")
+        } catch let error as OrcaError {
+            #expect(error == .commandFailed("terminal_handle_stale"))
+        } catch {
+            Issue.record("应抛 OrcaError，实际 \(error)")
+        }
+    }
+
+    @Test func terminalSwitchThrowsOnMalformedOutput() async throws {
+        let client = OrcaClient { _ in Fixtures.data("not json") }
+        do {
+            try await client.terminalSwitch(handle: "term_B1")
+            Issue.record("非 JSON 输出应抛错")
+        } catch let error as OrcaError {
+            #expect(error == .emptyOutput)
+        } catch {
+            Issue.record("应抛 OrcaError，实际 \(error)")
+        }
+    }
 }

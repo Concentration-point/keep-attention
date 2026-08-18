@@ -4,6 +4,10 @@ import PackageDescription
 let package = Package(
     name: "keep-attention",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "keep-attention", targets: ["keep-attention"]),
+        .executable(name: "keep-attention-hook", targets: ["keep-attention-hook"]),
+    ],
     targets: [
         .target(
             name: "KeepAttentionCore",
@@ -17,6 +21,12 @@ let package = Package(
             name: "keep-attention",
             dependencies: ["KeepAttentionCore"],
             path: "Sources/keep-attention",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "keep-attention-hook",
+            dependencies: ["KeepAttentionCore"],
+            path: "Sources/keep-attention-hook",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
