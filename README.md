@@ -65,6 +65,17 @@ open ./keep-attention.app
 
 - 轮询间隔默认 5 秒，可在展开面板设置中调整并持久化到 `UserDefaults`。
 - DeepSeek 模型固定为 `deepseek-v4-flash`，请求使用 JSON Output。
+- DeepSeek 外发是显式 opt-in：未设置 `DEEPSEEK_API_KEY` 时不会调用云端总结，只显示“未配置 API Key”。
+
+## DeepSeek 上下文脱敏与裁剪
+
+发送给 DeepSeek 前，应用会做本地脱敏和裁剪：
+
+- 当前 hook-only 路径只发送结构化 agent 完整回复，不发送 terminal tail。
+- 若未来使用 tail fallback，也只取最近 `40` 行，并限制外发字符数。
+- 常见敏感内容会在本地替换：`api_key` / `access_token` / `password` 类键值、Bearer token、`sk-*` / GitHub token、邮箱、本机 `/Users/<name>/` 路径、私钥块。
+
+这只是基础防线，不等于合规审批；内部代码、日志或隐私数据是否允许外发仍应由使用者自行确认。
 
 ## TraeX hook 集成
 

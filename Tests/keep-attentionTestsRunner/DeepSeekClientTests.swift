@@ -8,8 +8,8 @@ import Foundation
         repo: "repoA",
         branch: "main",
         title: "repoA · grok",
-        agentMessage: "正在写测试",
-        tail: ["第 1 行", "下一个问题：选 A 还是 B？"]
+        agentMessage: "正在写测试 api_key=secret123 user@example.com /Users/bytedance/project",
+        tail: ["第 1 行", "Authorization: Bearer abcdefghijk", "下一个问题：选 A 还是 B？"]
     )
 
     private func okBody(content: String) -> Data {
@@ -63,6 +63,12 @@ import Foundation
         #expect(userText.contains("repoA"))
         #expect(userText.contains("选 A 还是 B"))
         #expect(userText.contains("正在写测试"))
+        #expect(userText.contains("[REDACTED_SECRET]"))
+        #expect(userText.contains("[REDACTED_EMAIL]"))
+        #expect(userText.contains("Bearer [REDACTED_TOKEN]"))
+        #expect(!userText.contains("secret123"))
+        #expect(!userText.contains("user@example.com"))
+        #expect(!userText.contains("/Users/bytedance/"))
     }
 
     @Test func parsesFourFieldSummary() async throws {
@@ -145,7 +151,27 @@ import Foundation
         }
     }
 
-    @Test func redactHookPassthroughByDefault() {
-        #expect(redact("abc 123") == "abc 123")
+    @Test func redactMasksCommonSecretsAndLocalUserPaths() {
+        let input = """
+        api_key=secret123
+        Authorization: Bearer abcdefghijk
+        token sk-abcdefghi
+        email user@example.com
+        path /Users/bytedance/orca/keep-attention
+        """
+        let redacted = redact(input)
+        #expect(redacted.contains("api_key=[REDACTED_SECRET]"))
+        #expect(redacted.contains("Bearer [REDACTED_TOKEN]"))
+        #expect(redacted.contains("[REDACTED_TOKEN]"))
+        #expect(redacted.contains("[REDACTED_EMAIL]"))
+        #expect(redacted.contains("/Users/[USER]/orca/keep-attention"))
+        #expect(!redacted.contains("secret123"))
+        #expect(!redacted.contains("user@example.com"))
+        #expect(!redacted.contains("/Users/bytedance/"))
+    }
+
+    @Test func redactAndTruncateMarksDroppedContent() {
+        let output = redactAndTruncate(String(repeating: "a", count: 12), maxCharacters: 5)
+        #expect(output == "aaaaa\n…[已截断 7 字符]")
     }
 }

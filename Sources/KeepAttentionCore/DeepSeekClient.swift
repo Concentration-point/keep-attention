@@ -87,11 +87,11 @@ public struct DeepSeekClient: SummaryProviding {
         if let branch = context.branch, !branch.isEmpty { user += " 分支: \(branch)" }
         if let title = context.title, !title.isEmpty { user += "\n终端标题: \(title)" }
         if let message = context.agentMessage, !message.isEmpty {
-            user += "\n\n[agent 最近消息]\n\(redact(message))"
+            user += "\n\n[agent 最近消息]\n\(redactAndTruncate(message, maxCharacters: ContextExportPolicy.maxAgentMessageCharacters))"
         }
         if !context.tail.isEmpty {
-            let recent = context.tail.suffix(60).joined(separator: "\n")
-            user += "\n\n[终端最近输出]\n\(redact(recent))"
+            let recent = context.tail.suffix(ContextExportPolicy.maxTailLines).joined(separator: "\n")
+            user += "\n\n[终端最近输出]\n\(redactAndTruncate(recent, maxCharacters: ContextExportPolicy.maxTailCharacters))"
         }
         let body: [String: Any] = [
             "model": model,

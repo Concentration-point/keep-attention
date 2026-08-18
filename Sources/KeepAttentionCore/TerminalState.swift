@@ -194,9 +194,62 @@ public enum StatusResolver {
     }
 }
 
-// MARK: - 脱敏钩子（占位，默认透传；spec §7）
+// MARK: - 脱敏/裁剪（spec §7）
 
-/// 上下文脱敏钩子。MVP 直接透传，后续 #7 在此实现真正的脱敏。
+/// 发给云端总结器前的本地脱敏。目标是去掉高风险凭证/身份信息，而不是做语义改写。
 public func redact(_ text: String) -> String {
-    text
+    var output = text
+    let replacements: [(pattern: String, replacement: String, options: NSRegularExpression.Options)] = [
+        (
+            #"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"#,
+            "[REDACTED_PRIVATE_KEY]",
+            []
+        ),
+        (
+            #"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}"#,
+            "$1[REDACTED_TOKEN]",
+            [.caseInsensitive]
+        ),
+        (
+            #"\b(sk-[A-Za-z0-9_-]{8,}|gho_[A-Za-z0-9_]{8,}|ghp_[A-Za-z0-9_]{8,}|github_pat_[A-Za-z0-9_]+)\b"#,
+            "[REDACTED_TOKEN]",
+            []
+        ),
+        (
+            #"(?i)\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|session[_-]?token|password|passwd|pwd)\s*[:=]\s*)[^\s"']+"#,
+            "$1[REDACTED_SECRET]",
+            [.caseInsensitive]
+        ),
+        (
+            #"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+            "[REDACTED_EMAIL]",
+            [.caseInsensitive]
+        ),
+        (
+            #"/Users/[^/\s]+/"#,
+            "/Users/[USER]/",
+            []
+        ),
+    ]
+
+    for item in replacements {
+        guard let regex = try? NSRegularExpression(pattern: item.pattern, options: item.options) else { continue }
+        let range = NSRange(output.startIndex..<output.endIndex, in: output)
+        output = regex.stringByReplacingMatches(in: output, options: [], range: range, withTemplate: item.replacement)
+    }
+    return output
+}
+
+/// 脱敏后按字符数裁剪，保留开头语义并显式标记截断。
+public func redactAndTruncate(_ text: String, maxCharacters: Int) -> String {
+    let sanitized = redact(text)
+    guard sanitized.count > maxCharacters else { return sanitized }
+    let prefix = sanitized.prefix(maxCharacters)
+    return "\(prefix)\n…[已截断 \(sanitized.count - maxCharacters) 字符]"
+}
+
+public enum ContextExportPolicy {
+    public static let maxAgentMessageCharacters = 6_000
+    public static let maxTailLines = 40
+    public static let maxTailCharacters = 6_000
 }
