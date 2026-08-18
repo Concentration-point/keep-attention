@@ -4,16 +4,22 @@ import Foundation
 /// 一级：worktree ps 里 isActive == true 的 worktree；
 /// 二级：该 worktree 布局的 root.activeTabId → tab 里 active == true 的 pane；
 /// 推导链断裂时取所有终端里 lastOutputAt 最新的作为兜底（永不空白）。
-struct FocusResolver: Sendable {
-    struct Snapshot: Sendable {
+public struct FocusResolver: Sendable {
+    public struct Snapshot: Sendable {
         var worktrees: [WorktreeInfo]
         var terminals: [TerminalInfo]
         var layouts: [VisualLayout]
+
+        public init(worktrees: [WorktreeInfo], terminals: [TerminalInfo], layouts: [VisualLayout]) {
+            self.worktrees = worktrees
+            self.terminals = terminals
+            self.layouts = layouts
+        }
     }
 
-    let snapshot: Snapshot
+    public let snapshot: Snapshot
 
-    func focusedHandle() -> String? {
+    public func focusedHandle() -> String? {
         guard let active = snapshot.worktrees.first(where: { $0.isActive }) else {
             return fallbackHandle()
         }

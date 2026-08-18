@@ -4,17 +4,29 @@ import Observation
 /// 应用视图模型：一次 tick = 采集 → 去重 → 总结 → 发布（spec §2/§3 编排）。
 @MainActor
 @Observable
-final class AppModel {
-    struct TerminalDisplay: Identifiable, Equatable, Sendable {
-        let id: String
-        let handle: String
-        let repo: String
-        let branch: String?
-        let title: String?
-        var status: TerminalActivityStatus
-        var summary: SummaryState
-        var lastOutputAt: Date?
-        var updatedAt: Date?
+public final class AppModel {
+    public struct TerminalDisplay: Identifiable, Equatable, Sendable {
+        public let id: String
+        public let handle: String
+        public let repo: String
+        public let branch: String?
+        public let title: String?
+        public var status: TerminalActivityStatus
+        public var summary: SummaryState
+        public var lastOutputAt: Date?
+        public var updatedAt: Date?
+
+        public init(id: String, handle: String, repo: String, branch: String?, title: String?, status: TerminalActivityStatus, summary: SummaryState, lastOutputAt: Date?, updatedAt: Date?) {
+            self.id = id
+            self.handle = handle
+            self.repo = repo
+            self.branch = branch
+            self.title = title
+            self.status = status
+            self.summary = summary
+            self.lastOutputAt = lastOutputAt
+            self.updatedAt = updatedAt
+        }
     }
 
     static let pollIntervalKey = "pollIntervalSeconds"
@@ -22,12 +34,12 @@ final class AppModel {
     /// 单次 tick 最多读取的终端数（防终端数失控）。
     static let maxReadsPerTick = 32
 
-    private(set) var displays: [TerminalDisplay] = []
-    private(set) var focusedHandle: String?
-    private(set) var orcaError: String?
+    public private(set) var displays: [TerminalDisplay] = []
+    public private(set) var focusedHandle: String?
+    public private(set) var orcaError: String?
 
     /// 轮询间隔（秒），持久化到 UserDefaults（spec §4 设置，硬需求）。
-    var pollInterval: Double {
+    public var pollInterval: Double {
         didSet {
             guard oldValue != pollInterval else { return }
             pollInterval = min(max(pollInterval, 1), 600)
@@ -51,7 +63,7 @@ final class AppModel {
     private var waitingHandles: Set<String> = []
     private var isTicking = false
 
-    init(
+    public init(
         orca: OrcaClient,
         summarizer: SummaryProviding,
         defaults: DefaultsStoring = UserDefaults.standard,
@@ -73,18 +85,18 @@ final class AppModel {
     // MARK: - 派生视图状态
 
     /// 最紧急的等待终端（lastOutputAt 最久未更新者，spec §4 抢显）。
-    var mostUrgentWaiting: TerminalDisplay? {
+    public var mostUrgentWaiting: TerminalDisplay? {
         displays
             .filter { $0.status == .waitingForInput }
             .min { ($0.lastOutputAt ?? .distantPast) < ($1.lastOutputAt ?? .distantPast) }
     }
 
-    var waitingCount: Int {
+    public var waitingCount: Int {
         displays.filter { $0.status == .waitingForInput }.count
     }
 
     /// 药丸默认展示：抢显等待终端 > 焦点终端 > 任意终端。
-    var pillDisplay: TerminalDisplay? {
+    public var pillDisplay: TerminalDisplay? {
         mostUrgentWaiting
             ?? displays.first { $0.handle == focusedHandle }
             ?? displays.first
@@ -92,7 +104,7 @@ final class AppModel {
 
     // MARK: - 一次采集
 
-    func tick() async {
+    public func tick() async {
         guard !isTicking else { return }
         isTicking = true
         defer { isTicking = false }
@@ -246,7 +258,7 @@ final class AppModel {
 }
 
 /// UserDefaults 抽象（测试注入内存实现）。
-protocol DefaultsStoring: Sendable {
+public protocol DefaultsStoring: Sendable {
     func double(forKey key: String) -> Double
     func set(_ value: Double, forKey key: String)
 }
@@ -255,15 +267,16 @@ extension UserDefaults: DefaultsStoring {}
 
 /// 轮询驱动：循环 tick 的 Task，间隔变化时重启生效。
 @MainActor
-final class Poller {
+public final class Poller {
+    public init() {}
     private weak var model: AppModel?
     private var task: Task<Void, Never>?
 
-    func attach(_ model: AppModel) {
+    public func attach(_ model: AppModel) {
         self.model = model
     }
 
-    func start() {
+    public func start() {
         task?.cancel()
         guard let model else { return }
         task = Task {
@@ -275,11 +288,11 @@ final class Poller {
         }
     }
 
-    func reschedule() {
+    public func reschedule() {
         start()
     }
 
-    func stop() {
+    public func stop() {
         task?.cancel()
         task = nil
     }

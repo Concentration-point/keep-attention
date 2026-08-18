@@ -2,13 +2,13 @@ import Foundation
 
 // MARK: - 总结器协议（可注入，测试用 mock）
 
-protocol SummaryProviding: Sendable {
+public protocol SummaryProviding: Sendable {
     func summarize(context: SummaryContext) async throws -> TerminalSummary
 }
 
 // MARK: - 错误
 
-enum DeepSeekError: Error, Equatable {
+public enum DeepSeekError: Error, Equatable {
     case missingAPIKey
     case http(Int)
     case emptyContent
@@ -19,14 +19,14 @@ enum DeepSeekError: Error, Equatable {
 
 /// URLSession 直连 DeepSeek chat/completions，JSON Output 四段式（spec §3）。
 /// `send` 可注入，测试不打网络。
-struct DeepSeekClient: SummaryProviding {
-    static let endpoint = URL(string: "https://api.deepseek.com/chat/completions")!
-    static let model = "deepseek-v4-flash"
+public struct DeepSeekClient: SummaryProviding {
+    public static let endpoint = URL(string: "https://api.deepseek.com/chat/completions")!
+    public static let model = "deepseek-v4-flash"
 
     let apiKey: String?
     let send: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
 
-    init(
+    public init(
         apiKey: String?,
         timeout: TimeInterval = 30,
         send: (@Sendable (URLRequest) async throws -> (Data, HTTPURLResponse))? = nil
@@ -47,12 +47,12 @@ struct DeepSeekClient: SummaryProviding {
     }
 
     /// 从环境变量读 key（spec §1）。
-    static func apiKeyFromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+    public static func apiKeyFromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         guard let key = env["DEEPSEEK_API_KEY"], !key.isEmpty else { return nil }
         return key
     }
 
-    func summarize(context: SummaryContext) async throws -> TerminalSummary {
+    public func summarize(context: SummaryContext) async throws -> TerminalSummary {
         guard let apiKey, !apiKey.isEmpty else {
             throw DeepSeekError.missingAPIKey
         }

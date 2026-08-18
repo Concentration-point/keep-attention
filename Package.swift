@@ -5,13 +5,23 @@ let package = Package(
     name: "keep-attention",
     platforms: [.macOS(.v14)],
     targets: [
+        .target(
+            name: "KeepAttentionCore",
+            path: "Sources/KeepAttentionCore",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-enable-testing"]),
+            ]
+        ),
         .executableTarget(
             name: "keep-attention",
+            dependencies: ["KeepAttentionCore"],
             path: "Sources/keep-attention",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
             name: "keep-attention-tests",
+            dependencies: ["KeepAttentionCore"],
             path: "Tests/keep-attentionTestsRunner",
             swiftSettings: [
                 .swiftLanguageMode(.v6),

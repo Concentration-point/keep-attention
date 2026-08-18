@@ -1,4 +1,5 @@
 import SwiftUI
+import KeepAttentionCore
 
 /// 极简设置：轮询间隔配置 + 退出（spec §4 设置，硬需求）。
 struct SettingsView: View {

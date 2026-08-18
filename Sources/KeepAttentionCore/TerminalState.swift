@@ -4,7 +4,7 @@ import CryptoKit
 // MARK: - 忙闲状态
 
 /// 终端忙闲枚举（spec §2）：绿=忙 / 琥珀=等待输入 / 灰=空闲。
-enum TerminalActivityStatus: String, Equatable, Sendable {
+public enum TerminalActivityStatus: String, Equatable, Sendable {
     case busy
     case waitingForInput
     case idle
@@ -13,33 +13,48 @@ enum TerminalActivityStatus: String, Equatable, Sendable {
 // MARK: - 四段式摘要
 
 /// DeepSeek 输出的四段式摘要（spec §3）。
-struct TerminalSummary: Codable, Equatable, Sendable {
-    var currentTask: String
-    var progress: String
-    var nextStep: String
-    var needsInput: String
+public struct TerminalSummary: Codable, Equatable, Sendable {
+    public var currentTask: String
+    public var progress: String
+    public var nextStep: String
+    public var needsInput: String
+
+    public init(currentTask: String, progress: String, nextStep: String, needsInput: String) {
+        self.currentTask = currentTask
+        self.progress = progress
+        self.nextStep = nextStep
+        self.needsInput = needsInput
+    }
 }
 
 /// 单个终端摘要的可用状态；failed 携带 UI 直接显示的文案。
-enum SummaryState: Equatable, Sendable {
+public enum SummaryState: Equatable, Sendable {
     case loading
     case ready(TerminalSummary)
     case failed(String)
 }
 
 /// 送入总结器的上下文（双通道：结构化 agent 消息 + 渲染 tail）。
-struct SummaryContext: Equatable, Sendable {
+public struct SummaryContext: Equatable, Sendable {
     var repo: String
     var branch: String?
     var title: String?
     var agentMessage: String?
     var tail: [String]
+
+    public init(repo: String, branch: String?, title: String?, agentMessage: String?, tail: [String]) {
+        self.repo = repo
+        self.branch = branch
+        self.title = title
+        self.agentMessage = agentMessage
+        self.tail = tail
+    }
 }
 
 // MARK: - 内容指纹（去重键）
 
 /// 终端内容指纹：渲染 tail 文本的 SHA256（spec §3 去重键）。
-func contentFingerprint(_ tail: [String]) -> String {
+public func contentFingerprint(_ tail: [String]) -> String {
     SHA256.hash(data: Data(tail.joined(separator: "\n").utf8))
         .map { String(format: "%02x", $0) }
         .joined()
@@ -48,19 +63,27 @@ func contentFingerprint(_ tail: [String]) -> String {
 // MARK: - 忙闲判定
 
 /// 忙闲判定输入。
-struct StatusInput: Sendable {
+public struct StatusInput: Sendable {
     var agentStates: [String]
     var worktreeStatus: String?
     var lastOutputAt: Date?
     var tail: [String]?
     var now: Date
+
+    public init(agentStates: [String], worktreeStatus: String?, lastOutputAt: Date?, tail: [String]?, now: Date) {
+        self.agentStates = agentStates
+        self.worktreeStatus = worktreeStatus
+        self.lastOutputAt = lastOutputAt
+        self.tail = tail
+        self.now = now
+    }
 }
 
 /// 忙闲判定（spec §2）：
 /// 有 agents[].state 时用它；否则用 worktree status + lastOutputAt 新鲜度近似。
 /// waitingForInput 由 agent state 指示，或渲染文本尾部出现提问/确认提示；
 /// 拿不准一律归 .busy，不乱报等待。
-enum StatusResolver {
+public enum StatusResolver {
     /// agent state 里表示"等待用户"的取值（大小写不敏感）。
     static let waitingStates: Set<String> = [
         "waiting", "waitingforinput", "waiting-for-input", "needsinput",
@@ -108,6 +131,6 @@ enum StatusResolver {
 // MARK: - 脱敏钩子（占位，默认透传；spec §7）
 
 /// 上下文脱敏钩子。MVP 直接透传，后续 #7 在此实现真正的脱敏。
-func redact(_ text: String) -> String {
+public func redact(_ text: String) -> String {
     text
 }

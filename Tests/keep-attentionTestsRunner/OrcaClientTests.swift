@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import KeepAttentionCore
 
 /// OrcaClient 三个 CLI JSON 输出的 Codable 解析（样例取自真实脱敏输出）。
 @Suite struct OrcaClientDecodingTests {

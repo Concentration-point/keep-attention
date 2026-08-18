@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import KeepAttentionCore
 
 /// Poller 编排：焦点总结、去重（相同内容指纹不重复烧 API）、失败降级。
 @MainActor

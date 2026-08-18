@@ -1,4 +1,6 @@
+import Testing
 import Foundation
+@testable import KeepAttentionCore
 
 final class LockedBox<Value>: @unchecked Sendable {
     private let lock = NSLock()

@@ -1,4 +1,5 @@
 import SwiftUI
+import KeepAttentionCore
 
 /// 状态圆点：绿=忙 / 琥珀脉冲=等待输入 / 灰=空闲（spec §4）。
 struct StatusDot: View {

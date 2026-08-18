@@ -10,11 +10,11 @@ struct CLIEnvelope<Result: Decodable & Sendable>: Decodable, Sendable {
 
 // worktree ps
 
-struct WorktreePSResult: Decodable, Equatable, Sendable {
+public struct WorktreePSResult: Decodable, Equatable, Sendable {
     var worktrees: [WorktreeInfo]
 }
 
-struct WorktreeInfo: Decodable, Equatable, Sendable {
+public struct WorktreeInfo: Decodable, Equatable, Sendable {
     var worktreeId: String
     var repo: String
     var path: String?
@@ -35,7 +35,7 @@ struct WorktreeInfo: Decodable, Equatable, Sendable {
     }
 }
 
-struct AgentInfo: Decodable, Equatable, Sendable {
+public struct AgentInfo: Decodable, Equatable, Sendable {
     var state: String?
     var agentType: String?
     var prompt: String?
@@ -45,14 +45,14 @@ struct AgentInfo: Decodable, Equatable, Sendable {
 
 // terminal list
 
-struct TerminalListResult: Decodable, Equatable, Sendable {
+public struct TerminalListResult: Decodable, Equatable, Sendable {
     var terminals: [TerminalInfo]
     var visualLayouts: [VisualLayout]
     var totalCount: Int?
     var truncated: Bool?
 }
 
-struct TerminalInfo: Decodable, Equatable, Sendable, Identifiable {
+public struct TerminalInfo: Decodable, Equatable, Sendable, Identifiable {
     var handle: String
     var worktreeId: String?
     var worktreePath: String?
@@ -64,7 +64,7 @@ struct TerminalInfo: Decodable, Equatable, Sendable, Identifiable {
     var lastOutputAt: Double?
     var preview: String?
 
-    var id: String { handle }
+    public var id: String { handle }
     var lastOutputDate: Date? {
         lastOutputAt.map { Date(timeIntervalSince1970: $0 / 1000) }
     }
@@ -74,21 +74,21 @@ struct TerminalInfo: Decodable, Equatable, Sendable, Identifiable {
     }
 }
 
-struct VisualLayout: Decodable, Equatable, Sendable {
+public struct VisualLayout: Decodable, Equatable, Sendable {
     var worktreeId: String?
     var worktreePath: String?
     var root: PaneGroup
 }
 
 /// 布局根节点：group（含 tabs 与 activeTabId）。
-struct PaneGroup: Decodable, Equatable, Sendable {
+public struct PaneGroup: Decodable, Equatable, Sendable {
     var type: String?
     var groupId: String?
     var activeTabId: String?
     var tabs: [LayoutTab]
 }
 
-struct LayoutTab: Decodable, Equatable, Sendable {
+public struct LayoutTab: Decodable, Equatable, Sendable {
     var tabId: String?
     var title: String?
     var activeLeafId: String?
@@ -96,14 +96,14 @@ struct LayoutTab: Decodable, Equatable, Sendable {
 }
 
 /// 面板树节点：terminal 叶子 / pane-split 分屏 / 未来类型。
-indirect enum PaneNode: Decodable, Equatable, Sendable {
+public indirect enum PaneNode: Decodable, Equatable, Sendable {
     case terminal(PaneTerminal)
     case split(PaneSplit)
     case unknown
 
     private enum CodingKeys: String, CodingKey { case type }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(String.self, forKey: .type) {
         case "terminal":
@@ -116,7 +116,7 @@ indirect enum PaneNode: Decodable, Equatable, Sendable {
     }
 }
 
-struct PaneTerminal: Decodable, Equatable, Sendable {
+public struct PaneTerminal: Decodable, Equatable, Sendable {
     var handle: String?
     var tabId: String?
     var leafId: String?
@@ -125,7 +125,7 @@ struct PaneTerminal: Decodable, Equatable, Sendable {
     var active: Bool?
 }
 
-struct PaneSplit: Decodable, Equatable, Sendable {
+public struct PaneSplit: Decodable, Equatable, Sendable {
     var direction: String?
     var first: PaneNode
     var second: PaneNode
@@ -133,11 +133,11 @@ struct PaneSplit: Decodable, Equatable, Sendable {
 
 // terminal read
 
-struct TerminalReadResult: Decodable, Equatable, Sendable {
+public struct TerminalReadResult: Decodable, Equatable, Sendable {
     var terminal: TerminalRead
 }
 
-struct TerminalRead: Decodable, Equatable, Sendable {
+public struct TerminalRead: Decodable, Equatable, Sendable {
     var handle: String?
     var status: String?
     var tail: [String]
@@ -148,7 +148,7 @@ struct TerminalRead: Decodable, Equatable, Sendable {
 
 // MARK: - 错误
 
-enum OrcaError: Error, Equatable {
+public enum OrcaError: Error, Equatable {
     case missingBinary(String)
     case exit(Int32)
     case emptyOutput
@@ -158,19 +158,23 @@ enum OrcaError: Error, Equatable {
 
 /// 通过短命 `Process` 调 orca CLI，解析 --json 输出。
 /// `runCLI` 可注入，测试喂固定 JSON 样例。
-struct OrcaClient: Sendable {
-    static let defaultBinaryPath = "/usr/local/bin/orca"
+public struct OrcaClient: Sendable {
+    public static let defaultBinaryPath = "/usr/local/bin/orca"
 
     var runCLI: @Sendable ([String]) async throws -> Data
 
+    public init(_ runCLI: @escaping @Sendable ([String]) async throws -> Data) {
+        self.runCLI = runCLI
+    }
+
     /// 真实实现：`Process` 调 orca 可执行文件。
-    static func live(binaryPath: String = defaultBinaryPath) -> OrcaClient {
-        OrcaClient(runCLI: { args in
+    public static func live(binaryPath: String = defaultBinaryPath) -> OrcaClient {
+        OrcaClient { args in
             guard FileManager.default.isExecutableFile(atPath: binaryPath) else {
                 throw OrcaError.missingBinary(binaryPath)
             }
             return try await Self.runProcess(binaryPath, args)
-        })
+        }
     }
 
     /// 同步执行子进程并取 stdout（在 detached task 上跑，避免阻塞协作线程池）。
@@ -201,15 +205,15 @@ struct OrcaClient: Sendable {
 
     // MARK: 三个数据入口（每 tick 恒定前 2 个 + 按需 read）
 
-    func worktreePS() async throws -> WorktreePSResult {
+    public func worktreePS() async throws -> WorktreePSResult {
         try Self.decode(await runCLI(["worktree", "ps", "--json"]))
     }
 
-    func terminalList() async throws -> TerminalListResult {
+    public func terminalList() async throws -> TerminalListResult {
         try Self.decode(await runCLI(["terminal", "list", "--include-visual-layouts", "--json"]))
     }
 
-    func terminalRead(handle: String) async throws -> TerminalRead {
+    public func terminalRead(handle: String) async throws -> TerminalRead {
         let result: TerminalReadResult = try Self.decode(
             await runCLI(["terminal", "read", "--terminal", handle, "--json"])
         )
@@ -217,7 +221,7 @@ struct OrcaClient: Sendable {
     }
 
     /// 信封解包（也供测试直接喂样例 Data）。
-    static func decode<T: Decodable & Sendable>(_ data: Data) throws -> T {
+    public static func decode<T: Decodable & Sendable>(_ data: Data) throws -> T {
         do {
             return try JSONDecoder().decode(CLIEnvelope<T>.self, from: data).result
         } catch {

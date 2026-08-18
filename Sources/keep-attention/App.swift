@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import KeepAttentionCore
 
 /// 收起⇄展开的根视图：悬停展开预览，点击钉住（spec §4 触发方式）。
 struct IslandRootView: View {

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import KeepAttentionCore
 
 /// 两级焦点推导 + lastOutputAt 兜底（spec §2 焦点推导）。
 @Suite struct FocusResolverTests {

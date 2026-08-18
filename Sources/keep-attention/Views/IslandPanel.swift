@@ -1,4 +1,5 @@
 import SwiftUI
+import KeepAttentionCore
 
 /// 展开态：四段式面板（spec §4 展开态）。
 struct IslandPanel: View {

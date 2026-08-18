@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+@testable import KeepAttentionCore
 
 /// DeepSeek 客户端：请求构造 + 响应解析 + 错误路径（全部 mock，不打网络）。
 @Suite struct DeepSeekClientTests {
