@@ -10,10 +10,9 @@ let package = Package(
             path: "Sources/keep-attention",
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
-        .testTarget(
-            name: "keep-attentionTests",
-            dependencies: ["keep-attention"],
-            path: "Tests/keep-attentionTests",
+        .executableTarget(
+            name: "keep-attention-tests",
+            path: "Tests/keep-attentionTestsRunner",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .unsafeFlags([
