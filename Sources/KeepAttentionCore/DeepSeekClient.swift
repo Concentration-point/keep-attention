@@ -101,7 +101,7 @@ public struct DeepSeekClient: SummaryProviding {
             ],
             "response_format": ["type": "json_object"],
             "stream": false,
-            "max_tokens": 500,
+            "max_tokens": 2000,
         ]
         return try JSONSerialization.data(withJSONObject: body)
     }

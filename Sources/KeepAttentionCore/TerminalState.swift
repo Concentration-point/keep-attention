@@ -25,6 +25,39 @@ public struct TerminalSummary: Codable, Equatable, Sendable {
         self.nextStep = nextStep
         self.needsInput = needsInput
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case currentTask
+        case progress
+        case nextStep
+        case needsInput
+    }
+
+    /// Accepts the string values requested by the prompt as well as primitive model output.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        currentTask = try Self.decodeText(forKey: .currentTask, in: container, fallback: "未知")
+        progress = try Self.decodeText(forKey: .progress, in: container, fallback: "未知")
+        nextStep = try Self.decodeText(forKey: .nextStep, in: container, fallback: "未知")
+        needsInput = try Self.decodeText(forKey: .needsInput, in: container, fallback: "无", boolean: true)
+    }
+
+    private static func decodeText(
+        forKey key: CodingKeys,
+        in container: KeyedDecodingContainer<CodingKeys>,
+        fallback: String,
+        boolean: Bool = false
+    ) throws -> String {
+        guard container.contains(key), try !container.decodeNil(forKey: key) else { return fallback }
+        if let value = try? container.decode(String.self, forKey: key) { return value }
+        if let value = try? container.decode(Bool.self, forKey: key) {
+            if boolean { return value ? "需要输入" : "无" }
+            return String(value)
+        }
+        if let value = try? container.decode(Int.self, forKey: key) { return String(value) }
+        if let value = try? container.decode(Double.self, forKey: key) { return String(value) }
+        return fallback
+    }
 }
 
 /// 单个终端摘要的可用状态；failed 携带 UI 直接显示的文案。

@@ -11,7 +11,7 @@ struct IslandRootView: View {
     @State private var waitingIndex = 0
     @Namespace private var namespace
 
-    private var expanded: Bool { hovering || pinned }
+    private var expanded: Bool { pinned }
 
     /// 等待终端按最久未更新排序（index 0 即最紧急）。
     private var waitingDisplays: [AppModel.TerminalDisplay] {

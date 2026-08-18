@@ -51,6 +51,7 @@ import Foundation
         #expect(bodyMap["model"] as? String == "deepseek-v4-flash")
         #expect((bodyMap["response_format"] as? [String: String])?["type"] == "json_object")
         #expect(bodyMap["stream"] as? Bool == false)
+        #expect(bodyMap["max_tokens"] as? Int == 2000)
         let messages = try #require(bodyMap["messages"] as? [[String: Any]])
         #expect(messages.count == 2)
         #expect(messages[0]["role"] as? String == "system")
@@ -86,6 +87,33 @@ import Foundation
         }
         let summary = try await client.summarize(context: sampleContext)
         #expect(summary.needsInput == "需要确认方案")
+    }
+
+    @Test func booleanNeedsInputFalseMeansNoInput() throws {
+        let json = #"{"currentTask":"t","progress":"p","nextStep":"n","needsInput":false}"#
+        let summary = try JSONDecoder().decode(TerminalSummary.self, from: Fixtures.data(json))
+        #expect(summary.needsInput == "无")
+    }
+
+    @Test func booleanNeedsInputTrueMeansInputRequired() throws {
+        let json = #"{"currentTask":"t","progress":"p","nextStep":"n","needsInput":true}"#
+        let summary = try JSONDecoder().decode(TerminalSummary.self, from: Fixtures.data(json))
+        #expect(summary.needsInput == "需要输入")
+    }
+
+    @Test func numericProgressIsStringified() throws {
+        let json = #"{"currentTask":"t","progress":42,"nextStep":"n","needsInput":false}"#
+        let summary = try JSONDecoder().decode(TerminalSummary.self, from: Fixtures.data(json))
+        #expect(summary.progress == "42")
+        #expect(summary.needsInput == "无")
+    }
+
+    @Test func missingFieldsUseFallbackLabels() throws {
+        let summary = try JSONDecoder().decode(TerminalSummary.self, from: Fixtures.data(#"{"currentTask":"t"}"#))
+        #expect(summary.currentTask == "t")
+        #expect(summary.progress == "未知")
+        #expect(summary.nextStep == "未知")
+        #expect(summary.needsInput == "无")
     }
 
     @Test func missingAPIKeyThrows() async {
