@@ -5,6 +5,20 @@ import Foundation
 enum Fixtures {
     static func data(_ s: String) -> Data { Data(s.utf8) }
 
+    static let traeXPermissionRequest = #"{"hook_event_name":"PermissionRequest","session_id":"session-approve","turn_id":"turn-approve","tool_use_id":"tool-approve","tool_name":"Bash","cwd":"/Users/dev/orca/repoA","tool_input":{"command":"private-command"}}"#
+
+    static let traeXSessionStart = #"{"hook_event_name":"SessionStart","session_id":"session-start","source":"startup","cwd":"/Users/dev/orca/repoA"}"#
+    static let traeXSessionEnd = #"{"hook_event_name":"SessionEnd","session_id":"session-end","turn_id":"turn-end","reason":"prompt_input_exit","cwd":"/Users/dev/orca/repoA"}"#
+    static let traeXNotification = #"{"hook_event_name":"Notification","session_id":"session-notification","turn_id":"turn-notification","notification_type":"permission_prompt","stop_hook_active":true,"message":"private-message"}"#
+
+    static let traeXPlanQuestionOpened = #"{"hook_event_name":"PreToolUse","session_id":"session-plan","turn_id":"turn-plan","tool_use_id":"tool-question","tool_name":"request_user_input","tool_input":{"questions":[{"question":"private-question"}]}}"#
+    static let traeXPlanQuestionAnswered = #"{"hook_event_name":"PostToolUse","session_id":"session-plan","turn_id":"turn-plan","tool_use_id":"tool-question","tool_name":"request_user_input","tool_response":{"answer":"private-answer"}}"#
+    static let traeXPlanQuestionFailed = #"{"hook_event_name":"PostToolUseFailure","session_id":"session-plan","turn_id":"turn-plan","tool_use_id":"tool-question","tool_name":"request_user_input","error":"private-error"}"#
+
+    static let traeXPermissionApproved = #"{"hook_event_name":"PostToolUse","session_id":"session-approve","turn_id":"turn-approve","tool_use_id":"tool-approve","tool_name":"Bash","tool_response":{"stdout":"private-output"}}"#
+    static let traeXPermissionDenied = #"{"hook_event_name":"PostToolUseFailure","session_id":"session-deny","turn_id":"turn-deny","tool_use_id":"tool-deny","tool_name":"Bash","error":"private-error"}"#
+    static let traeXUnknownSessionStop = #"{"hook_event_name":"Stop","session_id":"session-resumed","turn_id":"turn-resumed","last_assistant_message":"private-message"}"#
+
     static let worktreePS = """
     {
       "id": "cmd-1",

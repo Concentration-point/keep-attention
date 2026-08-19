@@ -18,8 +18,8 @@ enum HookMain {
         let env = ProcessInfo.processInfo.environment
         let cwd = event.cwd ?? FileManager.default.currentDirectoryPath
 
-        // 1) 先落 bounded 日志（.scratch/keep-attention/traex-hook-events.jsonl）。
-        if let logLine = envelopeLine(event: event, env: env) {
+        // 1) 先落 bounded 安全诊断日志（.scratch/keep-attention/traex-hook-events.jsonl）。
+        if let logLine = TraeXHookLog.envelopeLine(event: event) {
             try? TraeXHookLog.append(
                 line: logLine,
                 to: URL(fileURLWithPath: cwd).appendingPathComponent(".scratch/keep-attention")
@@ -41,21 +41,6 @@ enum HookMain {
             if data.count > limit { return nil }
         }
         return data
-    }
-
-    /// 日志外层信封：时间戳 + 事件 + env 诊断信息。
-    static func envelopeLine(event: TraeXEvent, env: [String: String]) -> String? {
-        guard let eventData = try? JSONEncoder().encode(event),
-              let eventObject = (try? JSONSerialization.jsonObject(with: eventData)) as? [String: Any]
-        else { return nil }
-        var object: [String: Any] = [
-            "ts": Date().timeIntervalSince1970,
-            "event": eventObject,
-        ]
-        if let app = env["KEEP_ATTENTION_APP"] { object["app"] = app }
-        if let socket = env["KEEP_ATTENTION_SOCKET"] { object["socket"] = socket }
-        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 }
 

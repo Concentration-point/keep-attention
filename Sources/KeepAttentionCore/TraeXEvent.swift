@@ -12,6 +12,12 @@ public struct TraeXEvent: Codable, Equatable, Sendable {
     public var cwd: String?
     public var prompt: String?
     public var lastAssistantMessage: String?
+    public var toolUseId: String?
+    public var toolName: String?
+    public var source: String?
+    public var reason: String?
+    public var notificationType: String?
+    public var stopHookActive: Bool?
 
     public init(
         hookEventName: String?,
@@ -19,7 +25,13 @@ public struct TraeXEvent: Codable, Equatable, Sendable {
         turnId: String? = nil,
         cwd: String? = nil,
         prompt: String? = nil,
-        lastAssistantMessage: String? = nil
+        lastAssistantMessage: String? = nil,
+        toolUseId: String? = nil,
+        toolName: String? = nil,
+        source: String? = nil,
+        reason: String? = nil,
+        notificationType: String? = nil,
+        stopHookActive: Bool? = nil
     ) {
         self.hookEventName = hookEventName
         self.sessionId = sessionId
@@ -27,6 +39,12 @@ public struct TraeXEvent: Codable, Equatable, Sendable {
         self.cwd = cwd
         self.prompt = prompt
         self.lastAssistantMessage = lastAssistantMessage
+        self.toolUseId = toolUseId
+        self.toolName = toolName
+        self.source = source
+        self.reason = reason
+        self.notificationType = notificationType
+        self.stopHookActive = stopHookActive
     }
 
     enum CodingKeys: String, CodingKey {
@@ -36,28 +54,105 @@ public struct TraeXEvent: Codable, Equatable, Sendable {
         case cwd
         case prompt
         case lastAssistantMessage = "last_assistant_message"
+        case toolUseId = "tool_use_id"
+        case toolName = "tool_name"
+        case source
+        case reason
+        case notificationType = "notification_type"
+        case stopHookActive = "stop_hook_active"
     }
 
-    /// 第一版只接 UserPromptSubmit 和 Stop。
     public var isSupported: Bool {
-        hookEventName == Self.userPromptSubmit || hookEventName == Self.stop
+        switch hookEventName {
+        case Self.sessionStart, Self.sessionEnd, Self.permissionRequest,
+             Self.preToolUse, Self.postToolUse, Self.postToolUseFailure,
+             Self.notification, Self.userPromptSubmit, Self.stop:
+            true
+        default:
+            false
+        }
     }
 
+    public static let sessionStart = "SessionStart"
+    public static let sessionEnd = "SessionEnd"
+    public static let permissionRequest = "PermissionRequest"
+    public static let preToolUse = "PreToolUse"
+    public static let postToolUse = "PostToolUse"
+    public static let postToolUseFailure = "PostToolUseFailure"
+    public static let notification = "Notification"
     public static let userPromptSubmit = "UserPromptSubmit"
     public static let stop = "Stop"
 
     public static func decodeLine(_ line: String) -> TraeXEvent? {
-        guard let data = line.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TraeXEvent.self, from: data)
+        guard let data = line.data(using: .utf8),
+              var event = try? JSONDecoder().decode(TraeXEvent.self, from: data)
+        else { return nil }
+        if event.hookEventName != Self.userPromptSubmit && event.hookEventName != Self.stop {
+            event.prompt = nil
+            event.lastAssistantMessage = nil
+        }
+        return event
     }
 
     /// 规范化为单行 JSON（helper 转发与日志落盘共用）。
     public func encodeLine() throws -> String {
-        let data = try JSONEncoder().encode(self)
+        var encoded = self
+        if hookEventName != Self.userPromptSubmit && hookEventName != Self.stop {
+            encoded.prompt = nil
+            encoded.lastAssistantMessage = nil
+        }
+        let data = try JSONEncoder().encode(encoded)
         guard let line = String(data: data, encoding: .utf8) else {
             throw CocoaError(.coderInvalidValue)
         }
         return line
+    }
+
+    /// 仅记录字段形状、关联 ID 哈希和状态迁移；不持久化任何正文或原始 payload。
+    public func diagnosticLine(observedAt: Date, transitions: [String] = []) -> String? {
+        var object: [String: Any] = [
+            "ts": observedAt.timeIntervalSince1970,
+            "event_name": hookEventName ?? "unknown",
+            "field_shape": diagnosticFieldShape,
+            "transitions": transitions,
+        ]
+        if let sessionId { object["session_id_hash"] = Self.stableHash(sessionId) }
+        if let turnId { object["turn_id_hash"] = Self.stableHash(turnId) }
+        if let toolUseId { object["tool_use_id_hash"] = Self.stableHash(toolUseId) }
+        if let toolName { object["tool_name"] = toolName }
+        if let source { object["source"] = source }
+        if let reason { object["reason"] = reason }
+        if let notificationType { object["notification_type"] = notificationType }
+        if let stopHookActive { object["stop_hook_active"] = stopHookActive }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private var diagnosticFieldShape: [String] {
+        var fields = ["hook_event_name"]
+        if sessionId != nil { fields.append("session_id") }
+        if turnId != nil { fields.append("turn_id") }
+        if cwd != nil { fields.append("cwd") }
+        if prompt != nil { fields.append("prompt") }
+        if lastAssistantMessage != nil { fields.append("last_assistant_message") }
+        if toolUseId != nil { fields.append("tool_use_id") }
+        if toolName != nil { fields.append("tool_name") }
+        if source != nil { fields.append("source") }
+        if reason != nil { fields.append("reason") }
+        if notificationType != nil { fields.append("notification_type") }
+        if stopHookActive != nil { fields.append("stop_hook_active") }
+        return fields.sorted()
+    }
+
+    private static func stableHash(_ value: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
     }
 }
 
@@ -297,6 +392,10 @@ public enum TraeXHookEnv {
 public enum TraeXHookLog {
     public static let fileName = "traex-hook-events.jsonl"
     public static let defaultMaxBytes = 512 * 1024
+
+    public static func envelopeLine(event: TraeXEvent, observedAt: Date = Date()) -> String? {
+        event.diagnosticLine(observedAt: observedAt)
+    }
 
     public static func append(line: String, to directory: URL, maxBytes: Int = defaultMaxBytes) throws {
         let url = directory.appendingPathComponent(fileName)

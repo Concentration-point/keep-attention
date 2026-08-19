@@ -1,0 +1,94 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'set -a; . ./.trae/keep-attention.env; set +a; exec \"$KEEP_ATTENTION_APP/Contents/MacOS/keep-attention-hook\"'"
+          }
+        ]
+      }
+    ]
+  }
+}

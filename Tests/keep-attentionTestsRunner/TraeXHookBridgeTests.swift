@@ -164,6 +164,143 @@ import Darwin
     }
 }
 
+@Suite struct TraeXAttentionAdapterTests {
+    private let observedAt = Date(timeIntervalSince1970: 1_786_000_000)
+
+    @Test func permissionRequestMapsWithExactCorrelationIdentity() throws {
+        let event = try #require(TraeXEvent.decodeLine(Fixtures.traeXPermissionRequest))
+        let result = TraeXAttentionAdapter.adapt(
+            event,
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+
+        #expect(result.events == [.traeXPermissionRequested(
+            sessionID: "session-approve",
+            turnID: "turn-approve",
+            toolUseID: "tool-approve",
+            toolName: "Bash",
+            observedAt: observedAt
+        )])
+        #expect(result.discovery == nil)
+    }
+
+    @Test func planQuestionLifecycleMapsOpenAnswerAndFailure() throws {
+        let opened = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXPlanQuestionOpened)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(opened.events == [.traeXQuestionOpened(
+            sessionID: "session-plan",
+            turnID: "turn-plan",
+            toolUseID: "tool-question",
+            observedAt: observedAt
+        )])
+
+        let answered = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXPlanQuestionAnswered)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(answered.events == [.traeXQuestionAnswered(
+            sessionID: "session-plan",
+            turnID: "turn-plan",
+            toolUseID: "tool-question",
+            observedAt: observedAt
+        )])
+
+        let failed = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXPlanQuestionFailed)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(failed.events == [.traeXQuestionFailed(
+            sessionID: "session-plan",
+            turnID: "turn-plan",
+            toolUseID: "tool-question",
+            observedAt: observedAt
+        )])
+    }
+
+    @Test func toolResultMapsUsingExactToolIdentity() throws {
+        let completed = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXPermissionApproved)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(completed.events == [.traeXToolCompleted(
+            sessionID: "session-approve",
+            turnID: "turn-approve",
+            toolUseID: "tool-approve",
+            observedAt: observedAt
+        )])
+
+        let denied = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXPermissionDenied)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(denied.events == [.traeXQuestionFailed(
+            sessionID: "session-deny",
+            turnID: "turn-deny",
+            toolUseID: "tool-deny",
+            observedAt: observedAt
+        )])
+    }
+
+    @Test func sessionEndMarksOnlyMatchingSessionStale() throws {
+        let result = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXSessionEnd)),
+            observedAt: observedAt,
+            sessionIsKnown: true
+        )
+        #expect(result.events == [.markStale(
+            sessionKey: .traeX(sessionID: "session-end"),
+            observedAt: observedAt
+        )])
+    }
+
+    @Test func unknownSessionIsDiscoveredWithoutFabricatingOpenRequest() throws {
+        let result = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXUnknownSessionStop)),
+            observedAt: observedAt,
+            sessionIsKnown: false
+        )
+        #expect(result.discovery == .startBoundaryMissing)
+        #expect(result.events == [.unclassifiedObserved(
+            sessionID: "session-resumed",
+            correlationID: "turn-resumed",
+            eventName: TraeXEvent.stop,
+            observedAt: observedAt
+        )])
+    }
+
+    @Test func sessionStartAndUnknownIsolatedEventDoNotOpenRequests() throws {
+        let started = TraeXAttentionAdapter.adapt(
+            try #require(TraeXEvent.decodeLine(Fixtures.traeXSessionStart)),
+            observedAt: observedAt,
+            sessionIsKnown: false
+        )
+        #expect(started.discovery == nil)
+        #expect(started.events == [])
+
+        let isolated = TraeXAttentionAdapter.adapt(
+            TraeXEvent(hookEventName: "SubagentStart", sessionId: "isolated"),
+            observedAt: observedAt,
+            sessionIsKnown: false
+        )
+        #expect(isolated.discovery == nil)
+        #expect(isolated.events == [])
+    }
+
+    @Test func abnormalCloseProducesRestartStaleCandidate() {
+        #expect(TraeXAttentionAdapter.staleAfterRestart(observedAt: observedAt) == .markStaleAfterRestart(
+            observedAt: observedAt
+        ))
+    }
+}
+
 /// hook 协议层：JSON line 解码、unix socket server、bounded JSONL 日志。
 @Suite struct TraeXHookProtocolTests {    @Test func decodesHookPayloadLine() throws {
         let line = """
@@ -177,6 +314,39 @@ import Darwin
         #expect(event.prompt == "做点事")
         #expect(event.lastAssistantMessage == "干完了")
         #expect(event.isSupported)
+    }
+
+    @Test func decodesPermissionPayloadWithCorrelationIdentity() throws {
+        let event = try #require(TraeXEvent.decodeLine(Fixtures.traeXPermissionRequest))
+        #expect(event.hookEventName == TraeXEvent.permissionRequest)
+        #expect(event.sessionId == "session-approve")
+        #expect(event.turnId == "turn-approve")
+        #expect(event.toolUseId == "tool-approve")
+        #expect(event.toolName == "Bash")
+        #expect(event.isSupported)
+    }
+
+    @Test func supportsM1WhitelistAndDecodesAmbientMetadata() throws {
+        let expected = [
+            TraeXEvent.sessionStart, TraeXEvent.sessionEnd, TraeXEvent.permissionRequest,
+            TraeXEvent.preToolUse, TraeXEvent.postToolUse, TraeXEvent.postToolUseFailure,
+            TraeXEvent.notification, TraeXEvent.userPromptSubmit, TraeXEvent.stop,
+        ]
+        for eventName in expected {
+            let event = try #require(TraeXEvent.decodeLine(
+                #"{"hook_event_name":"\#(eventName)","session_id":"session","turn_id":"turn"}"#
+            ))
+            #expect(event.isSupported)
+        }
+        #expect(TraeXEvent.decodeLine(#"{"hook_event_name":"SubagentStart"}"#)?.isSupported == false)
+
+        let sessionStart = try #require(TraeXEvent.decodeLine(Fixtures.traeXSessionStart))
+        #expect(sessionStart.source == "startup")
+        let sessionEnd = try #require(TraeXEvent.decodeLine(Fixtures.traeXSessionEnd))
+        #expect(sessionEnd.reason == "prompt_input_exit")
+        let notification = try #require(TraeXEvent.decodeLine(Fixtures.traeXNotification))
+        #expect(notification.notificationType == "permission_prompt")
+        #expect(notification.stopHookActive == true)
     }
 
     @Test func decodesPartialPayloadAndRejectsGarbage() {
@@ -207,6 +377,63 @@ import Darwin
         let event = try #require(received.with { $0.first })
         #expect(event.hookEventName == "Stop")
         #expect(event.lastAssistantMessage == "done")
+    }
+
+    @Test func wireEventDecodingDoesNotRetainLifecycleBodies() throws {
+        let event = try #require(TraeXEvent.decodeLine(#"{"hook_event_name":"PostToolUseFailure","session_id":"session-safe","turn_id":"turn-safe","tool_use_id":"tool-safe","tool_name":"Bash","prompt":"private-prompt","last_assistant_message":"private-assistant","tool_input":{"command":"private-command"},"tool_response":{"stdout":"private-output"},"error":"private-error","message":"private-message"}"#))
+
+        #expect(event.prompt == nil)
+        #expect(event.lastAssistantMessage == nil)
+    }
+
+    @Test func encodeLineOmitsSensitiveFieldsForLifecycleEvents() throws {
+        let event = try #require(TraeXEvent.decodeLine(#"{"hook_event_name":"PostToolUseFailure","session_id":"session-safe","turn_id":"turn-safe","tool_use_id":"tool-safe","tool_name":"Bash","prompt":"private-prompt","tool_input":{"command":"private-command"},"tool_response":{"stdout":"private-output"},"error":"private-error","message":"private-message"}"#))
+        let line = try event.encodeLine()
+
+        #expect(line.contains("session-safe"))
+        #expect(line.contains("tool-safe"))
+        for sensitive in [
+            "private-prompt", "private-command", "private-output",
+            "private-error", "private-message", "tool_input", "tool_response",
+        ] {
+            #expect(!line.contains(sensitive))
+        }
+    }
+
+    @Test func sanitizedDiagnosticExcludesSensitiveBodiesAndRawIdentifiers() throws {
+        let event = try #require(TraeXEvent.decodeLine(#"{"hook_event_name":"PostToolUseFailure","session_id":"session-secret","turn_id":"turn-secret","tool_use_id":"tool-secret","tool_name":"request_user_input","prompt":"private-prompt","tool_input":{"question":"private-question"},"tool_response":{"answer":"private-answer"},"error":"private-error","message":"private-message"}"#))
+        let line = try #require(event.diagnosticLine(
+            observedAt: Date(timeIntervalSince1970: 1_786_000_000),
+            transitions: ["question_open->failed"]
+        ))
+
+        #expect(line.contains("PostToolUseFailure"))
+        #expect(line.contains("question_open->failed"))
+        #expect(line.contains("session_id_hash"))
+        #expect(line.contains("turn_id_hash"))
+        #expect(line.contains("tool_use_id_hash"))
+        #expect(!line.contains("session-secret"))
+        #expect(!line.contains("turn-secret"))
+        #expect(!line.contains("tool-secret"))
+        for sensitive in [
+            "private-prompt", "private-question", "private-answer",
+            "private-error", "private-message", "tool_input", "tool_response",
+        ] {
+            #expect(!line.contains(sensitive))
+        }
+    }
+
+    @Test func helperEnvelopeContainsOnlySanitizedDiagnostic() throws {
+        let event = try #require(TraeXEvent.decodeLine(#"{"hook_event_name":"PostToolUseFailure","session_id":"session-secret","turn_id":"turn-secret","tool_use_id":"tool-secret","tool_name":"Bash","error":"private-error"}"#))
+        let line = try #require(TraeXHookLog.envelopeLine(
+            event: event,
+            observedAt: Date(timeIntervalSince1970: 1_786_000_000)
+        ))
+
+        #expect(line.contains("session_id_hash"))
+        #expect(!line.contains("session-secret"))
+        #expect(!line.contains("private-error"))
+        #expect(!line.contains(#""event""#))
     }
 
     @Test func hookLogAppendsAndTruncatesWhenOverLimit() throws {
