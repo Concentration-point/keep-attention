@@ -127,3 +127,7 @@ KEEP_ATTENTION_SOCKET=/tmp/keep-attention-orca-keep-attention.sock
 - 收起态 pill 显示当前最需要注意的终端，并用徽标表达终端总数或等待输入数量。
 - 展开态显示所有 Orca live terminals，按 attention 排序：等待输入、有结构化结果、运行中、空闲/无 hook。
 - 点击列表行可查看对应终端详情；点击“跳转到终端”会调用 `orca terminal switch --terminal <handle> --json` 切回 Orca 对应终端。
+
+## 验收
+
+M1 验收模板与候选报告见 [`docs/acceptance/m1/`](docs/acceptance/m1/)。
