@@ -31,13 +31,17 @@ swift run keep-attention-tests
 
 该命令会逐项打印 `✔ Test ... passed`，末行打印实际执行统计，例如 `Test run with 35 tests in 6 suites passed`。
 
-内部 M1 Attention Queue UI preview（使用演示投影，不接入真实事件主循环）：
+界面由 `AttentionQueueModel` 运行时协调器驱动（request-centric，唯一界面）：真实 TraeX hook 事件产生 Attention Request，Orca 轮询提供 Ambient 概览，升级只在应用内 banner 呈现（不接 macOS 系统通知）。
+
+### 一键启动（推荐，自动读 env）
 
 ```sh
-M1_PREVIEW=1 swift run keep-attention
+./scripts/run-app.sh
 ```
 
-不设置 `M1_PREVIEW=1` 时仍使用原 terminal-centric UI；preview 仅用于人工验证 request card、Evidence drawer、Snoozed / Ambient 折叠和 Reduce Motion。
+该脚本会 `source` 项目级 `.trae/keep-attention.env`（其中可配置 `DEEPSEEK_API_KEY` 等，已被 `.gitignore` 忽略，不入库）启动打包后的 `keep-attention.app`。需先运行 `scripts/make-app.sh` 生成 app 产物。
+
+> 注意：直接运行 `./keep-attention.app/Contents/MacOS/keep-attention` 不会自动读取 `.trae/keep-attention.env` 中的 `DEEPSEEK_API_KEY`（app 主进程只从进程环境变量读取该 key）；要让 AI 摘要用上 key，请用 `./scripts/run-app.sh` 启动。TraeX hook helper 会自行 `source` 该 env 文件。
 
 ## 三种启动方式
 
@@ -83,7 +87,7 @@ open ./keep-attention.app
 - Workspace 级：按 repo 静音（mute）；AI 摘要增强需“配置 `DEEPSEEK_API_KEY` 且该 workspace 显式 opt-in”双重满足。
 - Request 操作：Seen / Snooze（5 分钟、15 分钟、1 小时）/ Dismiss stale / Jump。Jump 复用 #33 SessionAwareJump，只连接状态文案，不改其 fail-closed 逻辑。
 
-中断升级判定是纯逻辑（`KeepAttentionCore.EscalationPolicy`），不接入 Poller 主循环：
+中断升级判定是纯逻辑（`KeepAttentionCore.EscalationPolicy`），不接入主轮询循环：
 
 - 只有高置信来源（structuredHook / supervisedWorkflow）的强阻塞义务（permission / question）才会升级；仅 Unseen，Seen、未到期 Snooze、被 mute 的 workspace 一律抑制。
 - 同一义务至多升级一次（复用 #29 的 `escalationCount` / `lastEscalatedAt` 字段语义）；全局 60 秒短窗节流。

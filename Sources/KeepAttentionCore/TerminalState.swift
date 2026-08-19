@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 // MARK: - 忙闲状态
 
@@ -60,46 +59,6 @@ public struct TerminalSummary: Codable, Equatable, Sendable {
     }
 }
 
-/// 单个终端摘要的可用状态；failed/unavailable 携带 UI 直接显示的文案。
-public enum SummaryState: Equatable, Sendable {
-    case unavailable(String)
-    case loading
-    case ready(TerminalSummary)
-    case failed(String)
-}
-
-public extension SummaryState {
-    var hasStructuredResult: Bool {
-        switch self {
-        case .loading, .ready, .failed:
-            return true
-        case .unavailable:
-            return false
-        }
-    }
-}
-
-/// 展开列表行的稳定视觉状态（issue #16）。
-public enum TerminalListVisualState: String, Equatable, Sendable {
-    case waiting
-    case newResult
-    case running
-    case idle
-    case unavailable
-
-    public static func resolve(status: TerminalActivityStatus, summary: SummaryState) -> TerminalListVisualState {
-        if status == .waitingForInput { return .waiting }
-        if summary.hasStructuredResult { return .newResult }
-        if status == .busy { return .running }
-        switch summary {
-        case .unavailable:
-            return .unavailable
-        case .loading, .ready, .failed:
-            return .newResult
-        }
-    }
-}
-
 /// 送入总结器的上下文。hook-only 模式下只使用结构化 agent 消息，tail 为空。
 public struct SummaryContext: Equatable, Sendable {
     var repo: String
@@ -115,15 +74,6 @@ public struct SummaryContext: Equatable, Sendable {
         self.agentMessage = agentMessage
         self.tail = tail
     }
-}
-
-// MARK: - 内容指纹（去重键）
-
-/// 终端内容指纹：渲染 tail 文本的 SHA256（spec §3 去重键）。
-public func contentFingerprint(_ tail: [String]) -> String {
-    SHA256.hash(data: Data(tail.joined(separator: "\n").utf8))
-        .map { String(format: "%02x", $0) }
-        .joined()
 }
 
 // MARK: - 忙闲判定

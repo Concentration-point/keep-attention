@@ -1,9 +1,11 @@
 import SwiftUI
 import KeepAttentionCore
 
-struct AttentionQueuePill: View {
+/// 药丸行内容：信号点 + 标题/副标题 + 计数徽标（+ 展开态收起箭头）。
+/// 独立药丸（AttentionQueuePill）与单视图生长表面（AttentionIslandSurface）共用。
+struct AttentionQueuePillRow: View {
     let projection: AttentionQueueProjection
-    var namespace: Namespace.ID
+    var showsCollapseChevron: Bool = false
     let onTap: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var signalExpanded = false
@@ -28,18 +30,16 @@ struct AttentionQueuePill: View {
                 .foregroundStyle(isRequest ? SignalGlass.inkOnSignal : SignalGlass.secondaryText)
                 .frame(minWidth: 20, minHeight: 20)
                 .background(Circle().fill(isRequest ? SignalGlass.amber : SignalGlass.softFill))
+            if showsCollapseChevron {
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(SignalGlass.secondaryText)
+                    .padding(.trailing, 4)
+            }
         }
         .padding(.horizontal, 15)
         .padding(.vertical, 10)
-        .frame(width: 382, alignment: .leading)
-        .background {
-            Capsule()
-                .fill(SignalGlass.panel)
-                .overlay(Capsule().strokeBorder(SignalGlass.hairline))
-                .matchedGeometryEffect(id: "requestSurface", in: namespace)
-        }
-        .shadow(color: .black.opacity(0.38), radius: 14, y: 7)
-        .contentShape(Capsule())
+        .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
@@ -91,6 +91,26 @@ struct AttentionQueuePill: View {
         switch projection.collapsed {
         case .request(_, _, let count), .ambient(_, _, let count): count
         }
+    }
+}
+
+/// 独立药丸形态（胶囊背景 + matchedGeometry）。M1 运行时已改用
+/// AttentionIslandSurface 单视图生长表面；此视图保留独立胶囊用法。
+struct AttentionQueuePill: View {
+    let projection: AttentionQueueProjection
+    var namespace: Namespace.ID
+    let onTap: () -> Void
+
+    var body: some View {
+        AttentionQueuePillRow(projection: projection, onTap: onTap)
+            .frame(width: 382, alignment: .leading)
+            .background {
+                Capsule()
+                    .fill(SignalGlass.panel)
+                    .overlay(Capsule().strokeBorder(SignalGlass.hairline))
+                    .matchedGeometryEffect(id: "requestSurface", in: namespace)
+            }
+            .contentShape(Capsule())
     }
 }
 

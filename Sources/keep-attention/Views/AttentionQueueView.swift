@@ -1,10 +1,19 @@
 import SwiftUI
 import KeepAttentionCore
 
+/// M1 runtime 可选操作集：live root 传 model 实现，静态 preview 不传（保持只读）。
+struct AttentionQueueActions {
+    var onMarkSeen: (@MainActor () -> Void)? = nil
+    var onSnooze: (@MainActor (_ until: Date) -> Void)? = nil
+    var onDismissStale: (@MainActor () -> Void)? = nil
+    var performJump: (() async -> JumpOutcome?)? = nil
+}
+
+/// 展开态主体内容：由 AttentionIslandSurface 提供固定尺寸与背景，
+/// 本视图只负责队列滚动内容（头部行即表面药丸头）。
 struct AttentionQueueView: View {
     let projection: AttentionQueueProjection
-    var namespace: Namespace.ID
-    let onCollapse: () -> Void
+    var actions: AttentionQueueActions? = nil
     @State private var evidenceExpanded = false
     @State private var snoozedExpanded = false
     @State private var ambientExpanded = false
@@ -12,14 +21,16 @@ struct AttentionQueueView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            header
-            ScrollView {
-                VStack(alignment: .leading, spacing: 11) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 11) {
                     if let head = projection.queueHead {
                         RequestCardView(
                             request: head,
-                            evidenceExpanded: $evidenceExpanded
+                            evidenceExpanded: $evidenceExpanded,
+                            onMarkSeen: actions?.onMarkSeen,
+                            onSnooze: actions?.onSnooze,
+                            onDismissStale: dismissStaleAction,
+                            performJump: actions?.performJump
                         )
                     } else {
                         quietState
@@ -46,53 +57,16 @@ struct AttentionQueueView: View {
                         expanded: $ambientExpanded
                     )
                 }
+                .padding(14)
                 .padding(.bottom, 2)
             }
             .scrollIndicators(.hidden)
-        }
-        .padding(14)
-        .frame(width: 404, height: 540, alignment: .topLeading)
-        .background {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(SignalGlass.panel)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(SignalGlass.hairline)
-                )
-                .matchedGeometryEffect(id: "requestSurface", in: namespace)
-        }
-        .shadow(color: .black.opacity(0.46), radius: 22, y: 10)
     }
 
-    private var header: some View {
-        HStack(spacing: 9) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 7) {
-                    Text("Attention Queue")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundStyle(SignalGlass.primaryText)
-                    if projection.requestCount > 0 {
-                        Text("\(projection.requestCount)")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(SignalGlass.inkOnSignal)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(SignalGlass.amber))
-                    }
-                }
-                Text("Structured obligations, globally sorted")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(SignalGlass.secondaryText)
-            }
-            Spacer()
-            Button(action: onCollapse) {
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 10, weight: .bold))
-                    .frame(width: 26, height: 26)
-            }
-            .buttonStyle(SignalGlassButtonStyle())
-            .help("Collapse")
-        }
+    /// "Dismiss stale" 只在确实存在 stale 历史时挂到队首卡片的操作区。
+    private var dismissStaleAction: (@MainActor () -> Void)? {
+        guard let dismiss = actions?.onDismissStale, !projection.staleHistory.isEmpty else { return nil }
+        return dismiss
     }
 
     private var quietState: some View {

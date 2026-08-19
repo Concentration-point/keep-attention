@@ -132,19 +132,3 @@ import Foundation
         #expect(StatusResolver.resolve(makeInput(tail: tail)) == .idle)
     }
 }
-
-/// 内容指纹（去重键）。
-@Suite struct FingerprintTests {
-    @Test func sameContentSameFingerprint() {
-        #expect(contentFingerprint(["a", "b"]) == contentFingerprint(["a", "b"]))
-    }
-
-    @Test func differentContentDifferentFingerprint() {
-        #expect(contentFingerprint(["a", "b"]) != contentFingerprint(["a", "b", "c"]))
-    }
-
-    @Test func emptyIsStable() {
-        #expect(contentFingerprint([]) == contentFingerprint([]))
-        #expect(!contentFingerprint([]).isEmpty)
-    }
-}

@@ -5,6 +5,12 @@ struct RequestCardView: View {
     let request: AttentionRequestCardProjection
     @Binding var evidenceExpanded: Bool
     var onJump: () -> Void = {}
+    // M1 runtime 接线：可选操作回调（live root 传入，静态 preview 默认 nil 保持只读）。
+    // @MainActor 闭包由 AttentionQueueView 传入后在嵌入 RequestActionsView 时统一 Task 跳回主线程。
+    var onMarkSeen: (@MainActor () -> Void)? = nil
+    var onSnooze: (@MainActor (_ until: Date) -> Void)? = nil
+    var onDismissStale: (@MainActor () -> Void)? = nil
+    var performJump: (() async -> JumpOutcome?)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -20,6 +26,18 @@ struct RequestCardView: View {
                 EvidenceDrawerView(evidence: request.evidence, onJump: onJump)
                     .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
+            if hasRuntimeActions {
+                Divider().overlay(SignalGlass.hairline)
+                RequestActionsView(
+                    request: request,
+                    onMarkSeen: onMarkSeen.map { action in { Task { @MainActor in action() } } },
+                    onSnooze: onSnooze.map { action in { until in Task { @MainActor in action(until) } } },
+                    onDismissStale: onDismissStale.map { action in { Task { @MainActor in action() } } },
+                    performJump: performJump
+                )
+                .padding(.horizontal, 12)
+                .padding(.bottom, 10)
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: 17, style: .continuous)
@@ -30,6 +48,10 @@ struct RequestCardView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+    }
+
+    private var hasRuntimeActions: Bool {
+        onMarkSeen != nil || onSnooze != nil || onDismissStale != nil || performJump != nil
     }
 
     private var header: some View {

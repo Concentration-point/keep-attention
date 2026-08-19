@@ -4,164 +4,149 @@ import KeepAttentionCore
 
 private enum FloatingPanelLayout {
     static let width: CGFloat = 420
-    static let collapsedHeight: CGFloat = 96
+    /// 窗口固定为展开态高度（不再随收起/展开 resize）：展开动效由 SwiftUI
+    /// 单一 spring 驱动，彻底消除 AppKit resize 与 SwiftUI 动画的双时钟频闪。
     static let expandedHeight: CGFloat = 560
 }
 
-private enum InternalPreviewFlags {
-    static var attentionQueue: Bool {
-        ProcessInfo.processInfo.environment["M1_PREVIEW"] == "1"
+/// 根坐标空间名：表面 frame 上报与窗口命中测试共用。
+private let kaRootSpace = "kaRoot"
+
+/// SwiftUI 表面实时 frame（根坐标空间，左上原点）。窗口容器据此做事件穿透。
+private struct SurfaceFramePreferenceKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+}
+
+extension View {
+    /// 把当前表面的 frame 上报给窗口容器，用于事件穿透命中测试。
+    fileprivate func reportingSurfaceFrame() -> some View {
+        background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: SurfaceFramePreferenceKey.self,
+                    value: geo.frame(in: .named(kaRootSpace))
+                )
+            }
+        )
     }
 }
 
-/// 收起⇄展开的根视图：悬停展开预览，点击钉住（spec §4 触发方式）。
-struct IslandRootView: View {
-    let model: AppModel
+/// 把上报的表面 rect 写入窗口容器（AppKit 侧）。
+@MainActor
+private func updatePanelHitSurface(_ rect: CGRect, panel: NSPanel?) {
+    NSLog("KA-diag surfaceRect update: %@", NSStringFromRect(rect))
+    guard let container = panel?.contentView as? PanelPassthroughContentView else {
+        NSLog("KA-diag contentView is not passthrough container")
+        return
+    }
+    container.surfaceRect = rect
+}
+
+/// 固定尺寸透明窗口的内容容器：仅表面矩形内接收事件，其余区域点击穿透，
+/// 使"窗口恒为展开态大小、表面只在视觉上收起"成为可行架构。
+final class PanelPassthroughContentView: NSView {
+    /// SwiftUI 表面在窗口内的实时矩形（本视图坐标，isFlipped，随动画逐帧更新）。
+    var surfaceRect: CGRect = .zero
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = !surfaceRect.isNull && surfaceRect.insetBy(dx: -6, dy: -6).contains(point)
+        if !hit { return nil }
+        let result = super.hitTest(point)
+        NSLog("KA-diag hitTest point=%@ hit=%@ result=%@", NSStringFromPoint(point), hit ? 1 : 0, String(describing: result))
+        return result
+    }
+}
+
+/// M1 runtime 装配：真实 TraeX hook + Orca ambient 轮询驱动 AttentionQueueModel，
+/// 升级只在应用内 banner 呈现（不接系统通知）。
+/// 展开/收起 = AttentionIslandSurface 单视图生长（playground 选型 C）。
+struct AttentionQueueLiveRootView: View {
+    let model: AttentionQueueModel
     weak var panel: NSPanel?
-    @State private var hovering = false
-    @State private var pinned = false
-    @State private var showSettings = false
-    @State private var waitingIndex = 0
-    @State private var selectedHandle: String?
-    @State private var dragging = false
+    @State private var expanded = false
+    @State private var escalationBanner: AttentionEscalationNotice?
     @State private var dragSession: FloatingWindowDragSession?
-    @Namespace private var namespace
-
-    private var expanded: Bool { pinned }
-
-    /// 等待终端按最久未更新排序（index 0 即最紧急）。
-    private var waitingDisplays: [AppModel.TerminalDisplay] {
-        model.displays
-            .filter { $0.status == .waitingForInput }
-            .sorted { ($0.lastOutputAt ?? .distantPast) < ($1.lastOutputAt ?? .distantPast) }
-    }
-
-    private var panelDisplay: AppModel.TerminalDisplay? {
-        let waiting = waitingDisplays
-        if !waiting.isEmpty {
-            return waiting[waitingIndex % waiting.count]
-        }
-        return model.pillDisplay
-    }
-
-    /// 展开态详情目标：点击选中优先；未选择或 terminal 消失时回退默认展示（issue #13）。
-    private var selectedDisplay: AppModel.TerminalDisplay? {
-        AppModel.resolveDetailDisplay(
-            selectedHandle: selectedHandle,
-            displays: model.attentionDisplays,
-            fallback: model.attentionDisplays.first ?? panelDisplay
-        )
-    }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack(alignment: .top) {
-            if expanded {
-                IslandPanel(
-                    display: selectedDisplay,
-                    terminals: model.attentionDisplays,
-                    focusedHandle: model.focusedHandle,
-                    selectedHandle: selectedHandle ?? selectedDisplay?.handle,
-                    otherWaitingCount: max(model.waitingCount - 1, 0),
-                    namespace: namespace,
-                    onTogglePin: {
-                        withAnimation(spring) { pinned = false }
-                    },
-                    onCycleWaiting: {
-                        let waiting = waitingDisplays
-                        guard !waiting.isEmpty else { return }
-                        waitingIndex = (waitingIndex + 1) % waiting.count
-                        selectedHandle = waiting[waitingIndex].handle
-                    },
-                    onSelectTerminal: { handle in
-                        selectedHandle = handle
-                    },
-                    onJumpToTerminal: { handle in
-                        Task { await model.jumpToTerminal(handle: handle) }
-                    },
-                    jumpError: model.jumpError
-                )
-                .transition(.asymmetric(
-                    insertion: .scale(scale: 0.5, anchor: .top).combined(with: .opacity),
-                    removal: .opacity
-                ))
-                .gesture(dragGesture)
-                .scaleEffect(dragging ? 1.02 : 1)
-            } else {
-                IslandPill(
-                    display: model.pillDisplay,
-                    waitingCount: model.waitingCount,
-                    totalTerminalCount: model.totalTerminalCount,
-                    hasError: model.orcaError != nil,
-                    errorMessage: model.orcaError,
-                    namespace: namespace,
-                    onTap: {
-                        withAnimation(spring) { pinned = true }
-                    }
-                )
-                .transition(.asymmetric(
-                    insertion: .opacity,
-                    removal: .scale(scale: 0.5, anchor: .top).combined(with: .opacity)
-                ))
-                .gesture(dragGesture)
-                .scaleEffect(dragging ? 1.02 : 1)
-            }
-        }
-        .animation(spring, value: expanded)
-        .onHover { hovering = $0 }
-        .popover(isPresented: $showSettings) {
-            SettingsView(model: model)
-        }
-        .onChange(of: expanded) { _, newValue in
-            resizePanel(expanded: newValue, animated: true)
-        }
-        .onChange(of: model.displays) { _, displays in
-            // 选中 terminal 消失（关闭/orca 失败）→ 清空选择，回退默认详情（issue #13）。
-            if let handle = selectedHandle, !displays.contains(where: { $0.handle == handle }) {
-                selectedHandle = nil
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if expanded {
-                Button {
-                    showSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+            AttentionIslandSurface(
+                projection: model.projection,
+                isExpanded: expanded,
+                onToggle: { expanded.toggle() },
+                expandedContent: {
+                    AttentionQueueView(projection: model.projection, actions: liveActions)
                 }
-                .buttonStyle(.plain)
-                .padding(.top, 6)
-                .padding(.trailing, 10)
-                .help("设置")
+            )
+            .gesture(dragGesture)
+            .reportingSurfaceFrame()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .coordinateSpace(name: kaRootSpace)
+        .onPreferenceChange(SurfaceFramePreferenceKey.self) { rect in
+            updatePanelHitSurface(rect, panel: panel)
+        }
+        .overlay(alignment: .top) {
+            if let escalationBanner {
+                escalationBannerView(escalationBanner)
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .task { await pollOrcaForever() }
+        .onChange(of: model.lastEscalationNotice) { _, notice in
+            presentEscalation(notice)
+        }
+    }
+
+    /// 队首请求的操作回调：绑定时才渲染 RequestActionsView；head 为 nil 时自动置空。
+    private var liveActions: AttentionQueueActions {
+        var actions = AttentionQueueActions()
+        if let head = model.headRequest {
+            actions.onMarkSeen = { model.markSeen(head.key) }
+            actions.onSnooze = { until in model.snooze(head.key, until: until) }
+            actions.performJump = { await model.jump(for: head) }
+        }
+        if !model.projection.staleHistory.isEmpty {
+            actions.onDismissStale = { model.dismissStale() }
+        }
+        return actions
+    }
+
+    /// 轻量 Orca ambient 轮询：间隔复用既有持久化设置（默认 5s）。
+    private func pollOrcaForever() async {
+        while !Task.isCancelled {
+            await model.pollOrcaOnce()
+            try? await Task.sleep(for: .seconds(model.pollInterval))
+        }
+    }
+
+    /// 应用内升级呈现：短暂 banner，自动淡出；不接 macOS 系统通知。
+    private func presentEscalation(_ notice: AttentionEscalationNotice?) {
+        guard let notice else { return }
+        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.85)) {
+            escalationBanner = notice
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(6))
+            guard escalationBanner == notice else { return }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+                escalationBanner = nil
             }
         }
     }
 
-    private func resizePanel(expanded: Bool, animated: Bool) {
-        guard let panel,
-              let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
-        else { return }
-        let targetHeight = expanded ? FloatingPanelLayout.expandedHeight : FloatingPanelLayout.collapsedHeight
-        let frame = FloatingPanelGeometry.framePreservingTopEdge(
-            currentFrame: panel.frame,
-            targetSize: CGSize(width: FloatingPanelLayout.width, height: targetHeight),
-            visibleFrame: visible
-        )
-        guard panel.frame != frame else { return }
-        if animated {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                context.allowsImplicitAnimation = true
-                panel.animator().setFrame(frame, display: true)
-            }
-        } else {
-            panel.setFrame(frame, display: true)
-        }
-    }
-
-    private var spring: Animation {
-        .spring(response: 0.38, dampingFraction: 0.8)
+    private func escalationBannerView(_ notice: AttentionEscalationNotice) -> some View {
+        Label("已升级 · \(notice.kindLabel) 等待你处理", systemImage: "exclamationmark.bubble")
+            .font(.system(size: 10.5, weight: .semibold))
+            .foregroundStyle(SignalGlass.inkOnSignal)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(SignalGlass.amber))
+            .shadow(color: .black.opacity(0.3), radius: 6, y: 2)
+            .padding(.top, 2)
     }
 
     /// 拖动悬浮窗：位移实时换算为 NSPanel 原点移动（屏幕坐标 y 向上），松手弹回可视区。
@@ -182,7 +167,6 @@ struct IslandRootView: View {
                         )
                     )
                     dragSession = session
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) { dragging = true }
                 }
                 panel.setFrameOrigin(session.windowOrigin(for: currentMouseLocation))
             }
@@ -194,103 +178,44 @@ struct IslandRootView: View {
     private func endDrag() {
         guard let panel else { return }
         dragSession = nil
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { dragging = false }
         guard let visible = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
         var frame = panel.frame
         frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
         frame.origin.y = min(max(frame.minY, visible.minY), visible.maxY - frame.height)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            context.allowsImplicitAnimation = true
-            panel.animator().setFrameOrigin(frame.origin)
-        }
-    }
-}
-
-/// Internal M1 surface. Its demo projection is intentionally disconnected from the real poller.
-struct AttentionQueuePreviewRootView: View {
-    let projection: AttentionQueueProjection
-    weak var panel: NSPanel?
-    @State private var expanded = false
-    @Namespace private var namespace
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            if expanded {
-                AttentionQueueView(
-                    projection: projection,
-                    namespace: namespace,
-                    onCollapse: { setExpanded(false) }
-                )
-                .transition(reduceMotion ? .opacity : .scale(scale: 0.94, anchor: .top).combined(with: .opacity))
-            } else {
-                AttentionQueuePill(
-                    projection: projection,
-                    namespace: namespace,
-                    onTap: { setExpanded(true) }
-                )
-                .transition(reduceMotion ? .opacity : .scale(scale: 0.94, anchor: .top).combined(with: .opacity))
-            }
-        }
-    }
-
-    private func setExpanded(_ newValue: Bool) {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) {
-            expanded = newValue
-        }
-        resizePanel(expanded: newValue)
-    }
-
-    private func resizePanel(expanded: Bool) {
-        guard let panel,
-              let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
-        else { return }
-        let targetHeight = expanded ? FloatingPanelLayout.expandedHeight : FloatingPanelLayout.collapsedHeight
-        let frame = FloatingPanelGeometry.framePreservingTopEdge(
-            currentFrame: panel.frame,
-            targetSize: CGSize(width: FloatingPanelLayout.width, height: targetHeight),
-            visibleFrame: visible
-        )
-        guard panel.frame != frame else { return }
         if reduceMotion {
-            panel.setFrame(frame, display: true)
+            panel.setFrameOrigin(frame.origin)
         } else {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.18
+                context.duration = 0.25
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
-                panel.animator().setFrame(frame, display: true)
+                panel.animator().setFrameOrigin(frame.origin)
             }
         }
     }
 }
 
-/// 应用装配：NSApplication + 置顶非激活 NSPanel + 轮询（spec §1/§5）。
+/// 应用装配：NSApplication + 置顶非激活 NSPanel（固定为展开态大小）+ TraeX hook 桥接。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var model: AppModel?
-    private var poller: Poller?
+    private var queueModel: AttentionQueueModel?
     private var panel: NSPanel?
     private var eventServer: TraeXEventServer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        let poller = Poller()
-        let model = AppModel(
-            orca: .live(),
-            summarizer: DeepSeekClient(apiKey: DeepSeekClient.apiKeyFromEnvironment()),
-            onPollIntervalChanged: { [weak poller] in poller?.reschedule() }
+        let queueModel = AttentionQueueModel(
+            orca: OrcaClient.live(),
+            jumper: SessionAwareJumper(client: OrcaClient.live())
         )
-        poller.attach(model)
-        self.model = model
-        self.poller = poller
+        self.queueModel = queueModel
 
-        let panelHeight = FloatingPanelLayout.collapsedHeight
+        // 窗口恒为展开态大小：收起只是 SwiftUI 表面缩小，透明区域事件穿透，
+        // 窗口本体从不 resize → 展开动效单时钟无频闪。
+        let panelSize = NSSize(width: FloatingPanelLayout.width, height: FloatingPanelLayout.expandedHeight)
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: FloatingPanelLayout.width, height: panelHeight),
+            contentRect: NSRect(origin: .zero, size: panelSize),
             styleMask: [.nonactivatingPanel, .borderless],
             backing: .buffered,
             defer: false
@@ -309,37 +234,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let visible = screen.visibleFrame
             panel.setFrame(
                 NSRect(
-                    x: visible.midX - FloatingPanelLayout.width / 2,
-                    y: visible.maxY - panelHeight,
-                    width: FloatingPanelLayout.width,
-                    height: panelHeight
+                    x: visible.midX - panelSize.width / 2,
+                    y: visible.maxY - panelSize.height,
+                    width: panelSize.width,
+                    height: panelSize.height
                 ),
                 display: false
             )
         }
 
-        let hosting: NSView
-        if InternalPreviewFlags.attentionQueue {
-            hosting = NSHostingView(rootView: AttentionQueuePreviewRootView(
-                projection: AttentionQueuePreviewData.projection(),
-                panel: panel
-            ))
-        } else {
-            hosting = NSHostingView(rootView: IslandRootView(model: model, panel: panel))
-        }
-        hosting.setFrameSize(NSSize(width: FloatingPanelLayout.width, height: panelHeight))
-        panel.contentView = hosting
+        let container = PanelPassthroughContentView(frame: NSRect(origin: .zero, size: panelSize))
+        let hosting = NSHostingView(rootView: AttentionQueueLiveRootView(model: queueModel, panel: panel))
+        hosting.frame = NSRect(origin: .zero, size: panelSize)
+        container.addSubview(hosting)
+        panel.contentView = container
         panel.orderFrontRegardless()
         self.panel = panel
-
-        poller.start()
 
         // TraeX project hook bridge：进程内 unix socket server 接收 helper 转发的 hook 事件。
         // socket 路径优先级：环境变量 > <bundle 相邻项目根>/.trae/keep-attention.env > 默认。
         let socketPath = TraeXHookEnv.loadSocketPath(bundleURL: Bundle.main.bundleURL)
         let server = TraeXEventServer(socketPath: socketPath) { event in
             Task { @MainActor in
-                await model.applyTraeXEvent(event)
+                queueModel.applyTraeXEvent(event)
             }
         }
         do {
