@@ -1,9 +1,10 @@
 import SwiftUI
 import KeepAttentionCore
 
-/// 极简设置：轮询间隔配置 + 退出（spec §4 设置，硬需求）。
+/// 设置：轮询间隔 + 通知/控制（issue #34）+ 退出（spec §4 设置，硬需求）。
 struct SettingsView: View {
     let model: AppModel
+    @StateObject private var controls = NotificationControlsModel()
 
     var body: some View {
         Form {
@@ -15,6 +16,10 @@ struct SettingsView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
+            NotificationControlsSection(
+                model: controls,
+                workspaces: knownWorkspaces
+            )
             Section {
                 Button("退出 keep-attention") {
                     NSApp.terminate(nil)
@@ -23,6 +28,11 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 280)
+    }
+
+    /// workspace 列表来自当前 Orca 终端的 repo 名（去重排序；终端未上线时为空）。
+    private var knownWorkspaces: [String] {
+        Array(Set(model.displays.map(\.repo))).sorted()
     }
 
     private var pollIntervalBinding: Binding<Double> {

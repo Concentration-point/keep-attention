@@ -75,6 +75,23 @@ open ./keep-attention.app
 - DeepSeek 模型固定为 `deepseek-v4-flash`，请求使用 JSON Output。
 - DeepSeek 外发是显式 opt-in：未设置 `DEEPSEEK_API_KEY` 时不会调用云端总结，只显示“未配置 API Key”。
 
+## 通知与控制（issue #34）
+
+设置面板（展开浮层右上角齿轮）提供以下控制，状态持久化到 `UserDefaults`（键 `notificationControls.v1`）：
+
+- 全局：启用通知、通知声音、动效偏好（跟随系统 / 始终降低 / 完整）、清除本地历史（清空已关闭历史，保留进行中的义务）。
+- Workspace 级：按 repo 静音（mute）；AI 摘要增强需“配置 `DEEPSEEK_API_KEY` 且该 workspace 显式 opt-in”双重满足。
+- Request 操作：Seen / Snooze（5 分钟、15 分钟、1 小时）/ Dismiss stale / Jump。Jump 复用 #33 SessionAwareJump，只连接状态文案，不改其 fail-closed 逻辑。
+
+中断升级判定是纯逻辑（`KeepAttentionCore.EscalationPolicy`），不接入 Poller 主循环：
+
+- 只有高置信来源（structuredHook / supervisedWorkflow）的强阻塞义务（permission / question）才会升级；仅 Unseen，Seen、未到期 Snooze、被 mute 的 workspace 一律抑制。
+- 同一义务至多升级一次（复用 #29 的 `escalationCount` / `lastEscalatedAt` 字段语义）；全局 60 秒短窗节流。
+- Stale 默认低调；只有原本强阻塞的 stale 才可发一次低频 uncertain 通知（15 分钟节流窗）。
+- AI 摘要只外发白名单最小片段（repo/branch 脱敏、kind 标签、确定性文案、安全事件标签，总长截断 1200 字符），不携带 session id、路径、标题或原始 hook payload；AI 失败时 fail-open 回退本地确定性文案。
+
+注意：macOS 通知权限/真实投递、声音播放、系统 Reduce Motion 联动、workspace mute/AI opt-in 对真实终端的效果，需在真实运行环境中人工验证；单元测试仅覆盖判定逻辑。
+
 ## DeepSeek 上下文脱敏与裁剪
 
 发送给 DeepSeek 前，应用会做本地脱敏和裁剪：
