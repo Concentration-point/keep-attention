@@ -31,6 +31,14 @@ swift run keep-attention-tests
 
 该命令会逐项打印 `✔ Test ... passed`，末行打印实际执行统计，例如 `Test run with 35 tests in 6 suites passed`。
 
+内部 M1 Attention Queue UI preview（使用演示投影，不接入真实事件主循环）：
+
+```sh
+M1_PREVIEW=1 swift run keep-attention
+```
+
+不设置 `M1_PREVIEW=1` 时仍使用原 terminal-centric UI；preview 仅用于人工验证 request card、Evidence drawer、Snoozed / Ambient 折叠和 Reduce Motion。
+
 ## 三种启动方式
 
 ### 1. 开发期启动

@@ -8,6 +8,12 @@ private enum FloatingPanelLayout {
     static let expandedHeight: CGFloat = 560
 }
 
+private enum InternalPreviewFlags {
+    static var attentionQueue: Bool {
+        ProcessInfo.processInfo.environment["M1_PREVIEW"] == "1"
+    }
+}
+
 /// 收起⇄展开的根视图：悬停展开预览，点击钉住（spec §4 触发方式）。
 struct IslandRootView: View {
     let model: AppModel
@@ -202,6 +208,65 @@ struct IslandRootView: View {
     }
 }
 
+/// Internal M1 surface. Its demo projection is intentionally disconnected from the real poller.
+struct AttentionQueuePreviewRootView: View {
+    let projection: AttentionQueueProjection
+    weak var panel: NSPanel?
+    @State private var expanded = false
+    @Namespace private var namespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            if expanded {
+                AttentionQueueView(
+                    projection: projection,
+                    namespace: namespace,
+                    onCollapse: { setExpanded(false) }
+                )
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.94, anchor: .top).combined(with: .opacity))
+            } else {
+                AttentionQueuePill(
+                    projection: projection,
+                    namespace: namespace,
+                    onTap: { setExpanded(true) }
+                )
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.94, anchor: .top).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func setExpanded(_ newValue: Bool) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) {
+            expanded = newValue
+        }
+        resizePanel(expanded: newValue)
+    }
+
+    private func resizePanel(expanded: Bool) {
+        guard let panel,
+              let visible = (panel.screen ?? NSScreen.main)?.visibleFrame
+        else { return }
+        let targetHeight = expanded ? FloatingPanelLayout.expandedHeight : FloatingPanelLayout.collapsedHeight
+        let frame = FloatingPanelGeometry.framePreservingTopEdge(
+            currentFrame: panel.frame,
+            targetSize: CGSize(width: FloatingPanelLayout.width, height: targetHeight),
+            visibleFrame: visible
+        )
+        guard panel.frame != frame else { return }
+        if reduceMotion {
+            panel.setFrame(frame, display: true)
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.allowsImplicitAnimation = true
+                panel.animator().setFrame(frame, display: true)
+            }
+        }
+    }
+}
+
 /// 应用装配：NSApplication + 置顶非激活 NSPanel + 轮询（spec §1/§5）。
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -253,7 +318,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
 
-        let hosting = NSHostingView(rootView: IslandRootView(model: model, panel: panel))
+        let hosting: NSView
+        if InternalPreviewFlags.attentionQueue {
+            hosting = NSHostingView(rootView: AttentionQueuePreviewRootView(
+                projection: AttentionQueuePreviewData.projection(),
+                panel: panel
+            ))
+        } else {
+            hosting = NSHostingView(rootView: IslandRootView(model: model, panel: panel))
+        }
         hosting.setFrameSize(NSSize(width: FloatingPanelLayout.width, height: panelHeight))
         panel.contentView = hosting
         panel.orderFrontRegardless()
