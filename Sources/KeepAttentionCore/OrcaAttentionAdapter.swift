@@ -62,7 +62,15 @@ public enum OrcaAttentionAdapter {
                 lastOutputAt: terminal.lastOutputDate,
                 isFocused: terminal.handle == focusedHandle,
                 activity: activity,
-                coverage: agent == nil ? .coverageGap : .structuredAgent
+                coverage: agent == nil ? .coverageGap : .structuredAgent,
+                session: sessionDisplay(
+                    agent: agent,
+                    worktree: worktree,
+                    terminal: terminal,
+                    activity: activity
+                ),
+                summaryCacheKey: summaryCacheKey(agent: agent, terminal: terminal),
+                summaryContext: summaryContext(agent: agent, worktree: worktree, terminal: terminal)
             )
         })
         let events: [AttentionRequestEvent] = supervisedSignals.compactMap { signal in
@@ -108,6 +116,92 @@ public enum OrcaAttentionAdapter {
         return OrcaAttentionAdapterResult(events: events, ambient: ambient)
     }
 
+    private static func sessionDisplay(
+        agent: AgentInfo?,
+        worktree: WorktreeInfo?,
+        terminal: TerminalInfo,
+        activity: TerminalActivityStatus
+    ) -> SessionOverviewDisplay {
+        let updatedAt = agent?.updatedDate ?? terminal.lastOutputDate ?? worktree?.lastOutputDate
+        guard let agent else {
+            return .coverageGap(updatedAt: updatedAt)
+        }
+        return SessionOverviewDisplay(
+            currentTask: safeTaskLabel(agent: agent),
+            progress: "State: \(nonEmpty(agent.state) ?? "unknown")",
+            nextStep: nextStep(agent: agent, activity: activity),
+            needsInput: activity == .waitingForInput
+                ? "May need input · not request"
+                : "Unknown · not request",
+            sourceConfidence: "structured agent · deterministic local fallback · AI disabled",
+            updatedAt: updatedAt,
+            summaryFingerprint: agent.lastAssistantMessage.map(stableFingerprint)
+        )
+    }
+
+    private static func nextStep(agent: AgentInfo, activity: TerminalActivityStatus) -> String {
+        if activity == .waitingForInput {
+            return "Check the structured source before responding."
+        }
+        if nonEmpty(agent.lastAssistantMessage) != nil {
+            return "Review the latest structured reply in Orca."
+        }
+        if let tool = nonEmpty(agent.toolName) {
+            return "Wait for \(tool) to finish."
+        }
+        return activity == .idle ? "No active structured step." : "Wait for the next structured update."
+    }
+
+    private static func safeTaskLabel(agent: AgentInfo) -> String {
+        nonEmpty(agent.taskTitle)
+            ?? nonEmpty(agent.agentType)
+            ?? "Structured agent session"
+    }
+
+    private static func summaryCacheKey(agent: AgentInfo?, terminal: TerminalInfo) -> String? {
+        guard nonEmpty(agent?.lastAssistantMessage) != nil else { return nil }
+        return AttentionQueueModel.safeSessionCacheKey(source: "orca", identity: stableSessionKey(for: terminal))
+    }
+
+    private static func stableSessionKey(for terminal: TerminalInfo) -> String {
+        [
+            terminal.worktreeId,
+            terminal.tabId,
+            terminal.leafId,
+            terminal.handle,
+        ]
+        .compactMap(nonEmpty)
+        .joined(separator: ":")
+    }
+
+    private static func summaryContext(
+        agent: AgentInfo?,
+        worktree: WorktreeInfo?,
+        terminal: TerminalInfo
+    ) -> SummaryContext? {
+        guard let agent, let message = nonEmpty(agent.lastAssistantMessage) else { return nil }
+        return AISummaryPolicy.makeSessionOverviewContext(
+            repo: worktree?.repo,
+            branch: terminal.shortBranch ?? worktree?.shortBranch,
+            state: agent.state,
+            taskLabel: safeTaskLabel(agent: agent),
+            toolName: agent.toolName,
+            assistantReply: message
+        )
+    }
+
+    private static func safeComponent(_ value: String?) -> String? {
+        guard let value = nonEmpty(value),
+              !value.contains("/"),
+              !value.contains("\\")
+        else { return nil }
+        return value
+    }
+
+    private static func stableFingerprint(_ text: String) -> String {
+        AttentionQueueModel.stableFingerprint(text)
+    }
+
     private static func matchedAgent(
         for terminal: TerminalInfo,
         in agentsByPane: [String: AgentInfo]
@@ -132,5 +226,11 @@ public enum OrcaAttentionAdapter {
 
     private static func hasCorrelation(_ values: String...) -> Bool {
         values.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+}
+
+private extension AgentInfo {
+    var updatedDate: Date? {
+        updatedAt.map { Date(timeIntervalSince1970: $0 / 1000) }
     }
 }

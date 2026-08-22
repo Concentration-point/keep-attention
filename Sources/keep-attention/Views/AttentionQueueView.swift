@@ -1,14 +1,6 @@
 import SwiftUI
 import KeepAttentionCore
 
-/// M1 runtime 可选操作集：live root 传 model 实现，静态 preview 不传（保持只读）。
-struct AttentionQueueActions {
-    var onMarkSeen: (@MainActor () -> Void)? = nil
-    var onSnooze: (@MainActor (_ until: Date) -> Void)? = nil
-    var onDismissStale: (@MainActor () -> Void)? = nil
-    var performJump: (() async -> JumpOutcome?)? = nil
-}
-
 /// 展开态主体内容：由 AttentionIslandSurface 提供固定尺寸与背景，
 /// 本视图只负责队列滚动内容（头部行即表面药丸头）。
 struct AttentionQueueView: View {
@@ -39,6 +31,12 @@ struct AttentionQueueView: View {
                     if !projection.queuePreviews.isEmpty {
                         queuePreview
                     }
+                    AmbientSectionView(
+                        entries: projection.ambient,
+                        availabilityLabel: projection.ambientAvailabilityLabel,
+                        expanded: $ambientExpanded,
+                        onSetAISummaryOptIn: actions?.onSetAISummaryOptIn
+                    )
                     disclosureSection(
                         title: "Snoozed",
                         count: projection.snoozed.count,
@@ -51,20 +49,16 @@ struct AttentionQueueView: View {
                         expanded: $staleExpanded,
                         items: projection.staleHistory
                     )
-                    AmbientSectionView(
-                        entries: projection.ambient,
-                        availabilityLabel: projection.ambientAvailabilityLabel,
-                        expanded: $ambientExpanded
-                    )
                 }
                 .padding(14)
                 .padding(.bottom, 2)
             }
             .scrollIndicators(.hidden)
+            .accessibilityElement(children: .contain)
     }
 
     /// "Dismiss stale" 只在确实存在 stale 历史时挂到队首卡片的操作区。
-    private var dismissStaleAction: (@MainActor () -> Void)? {
+    private var dismissStaleAction: (@MainActor @Sendable () -> Void)? {
         guard let dismiss = actions?.onDismissStale, !projection.staleHistory.isEmpty else { return nil }
         return dismiss
     }

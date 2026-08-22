@@ -207,7 +207,7 @@ import Foundation
             Issue.record("无 request 时 collapsed 应为 ambient，实际 \(model.projection.collapsed)")
             return
         }
-        #expect(title.hasPrefix("Ambient · 5"))
+        #expect(title.hasPrefix("Session Overview · 5"))
         #expect(detail.contains("3 coverage gaps"))
         #expect(count == 5)
     }
@@ -229,6 +229,29 @@ import Foundation
         let snapshot = try! makeSnapshot()
         model.applyOrcaSnapshot(snapshot)
         #expect(model.projection.ambientAvailabilityLabel == nil)
+    }
+
+    @Test func orcaPollFailureClearsPreviouslySuccessfulRowsRatherThanShowingStaleTruth() async {
+        let calls = LockedBox(0)
+        let orca = OrcaClient { args in
+            let current = calls.with { value -> Int in
+                defer { value += 1 }
+                return value
+            }
+            if current < 2 {
+                return Fixtures.data(args.contains("worktree") ? Fixtures.worktreePS : Fixtures.terminalList)
+            }
+            throw OrcaError.exit(1)
+        }
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_787_300_000))
+        let model = makeModel(orca: orca, clock: clock)
+
+        await model.pollOrcaOnce()
+        #expect(!model.projection.ambient.isEmpty)
+        await model.pollOrcaOnce()
+
+        #expect(model.projection.ambient.isEmpty)
+        #expect(model.projection.ambientAvailabilityLabel == "Orca unavailable")
     }
 
     // MARK: - 操作端

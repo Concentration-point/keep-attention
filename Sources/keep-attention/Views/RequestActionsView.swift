@@ -16,7 +16,7 @@ struct RequestActionsView: View {
     var onMarkSeen: (() -> Void)?
     var onSnooze: ((_ until: Date) -> Void)?
     var onDismissStale: (() -> Void)?
-    var performJump: (() async -> JumpOutcome?)?
+    var performJump: (@MainActor @Sendable () async -> JumpOutcome?)?
     @State private var jumpStatus: String?
 
     private static let snoozeChoices: [(label: String, interval: TimeInterval)] = [
@@ -31,6 +31,8 @@ struct RequestActionsView: View {
                 if let onMarkSeen {
                     Button("Seen") { onMarkSeen() }
                         .buttonStyle(SignalGlassButtonStyle())
+                        .accessibilityIdentifier(AttentionAccessibilityID.markSeen)
+                        .accessibilityLabel("Mark request as seen")
                 }
                 if onSnooze != nil {
                     Menu {
@@ -38,16 +40,23 @@ struct RequestActionsView: View {
                             Button(choice.label) {
                                 onSnooze?(Date().addingTimeInterval(choice.interval))
                             }
+                            .accessibilityIdentifier(choice.interval == 5 * 60
+                                ? AttentionAccessibilityID.snoozeFiveMinutes
+                                : "request.snooze.\(Int(choice.interval))")
                         }
                     } label: {
                         Label("Snooze", systemImage: "moon.zzz")
                     }
                     .buttonStyle(SignalGlassButtonStyle())
                     .fixedSize()
+                    .accessibilityIdentifier(AttentionAccessibilityID.snooze)
+                    .accessibilityLabel("Snooze request")
                 }
                 if let onDismissStale {
                     Button("Dismiss stale") { onDismissStale() }
                         .buttonStyle(SignalGlassButtonStyle())
+                        .accessibilityIdentifier(AttentionAccessibilityID.dismissStale)
+                        .accessibilityLabel("Dismiss stale request")
                 }
                 Spacer()
                 if let performJump {
@@ -57,6 +66,8 @@ struct RequestActionsView: View {
                         Label("Jump", systemImage: "arrow.down.forward.square")
                     }
                     .buttonStyle(SignalGlassButtonStyle())
+                    .accessibilityIdentifier(AttentionAccessibilityID.jump)
+                    .accessibilityLabel("Jump to request")
                 }
             }
             if let jumpStatus {
@@ -65,6 +76,7 @@ struct RequestActionsView: View {
                     .foregroundStyle(SignalGlass.secondaryText)
             }
         }
+        .accessibilityElement(children: .contain)
     }
 
     private func runJump(_ performJump: () async -> JumpOutcome?) async {

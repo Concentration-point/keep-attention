@@ -56,15 +56,36 @@ public struct AttentionQueueRuntimePayload: Codable, Equatable, Sendable {
     public var snapshot: AttentionRequestPersistenceSnapshot
     public var seenTraeXSessionIDs: [String]
     public var traeXSessionCWDMappings: [String: String]
+    public var sessionSummaries: [String: SessionSummaryCacheEntry]
 
     public init(
         snapshot: AttentionRequestPersistenceSnapshot,
         seenTraeXSessionIDs: [String],
-        traeXSessionCWDMappings: [String: String]
+        traeXSessionCWDMappings: [String: String],
+        sessionSummaries: [String: SessionSummaryCacheEntry] = [:]
     ) {
         self.snapshot = snapshot
         self.seenTraeXSessionIDs = seenTraeXSessionIDs
         self.traeXSessionCWDMappings = traeXSessionCWDMappings
+        self.sessionSummaries = sessionSummaries
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case snapshot
+        case seenTraeXSessionIDs
+        case traeXSessionCWDMappings
+        case sessionSummaries
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        snapshot = try container.decode(AttentionRequestPersistenceSnapshot.self, forKey: .snapshot)
+        seenTraeXSessionIDs = try container.decode([String].self, forKey: .seenTraeXSessionIDs)
+        traeXSessionCWDMappings = try container.decode([String: String].self, forKey: .traeXSessionCWDMappings)
+        sessionSummaries = try container.decodeIfPresent(
+            [String: SessionSummaryCacheEntry].self,
+            forKey: .sessionSummaries
+        ) ?? [:]
     }
 }
 
@@ -96,6 +117,15 @@ public struct AttentionEscalationNotice: Equatable, Sendable {
     }
 }
 
+public enum SummaryProviderFactory {
+    public static func deepSeekFromEnvironment(
+        _ env: [String: String] = ProcessInfo.processInfo.environment
+    ) -> (any SummaryProviding)? {
+        guard let key = DeepSeekClient.apiKeyFromEnvironment(env) else { return nil }
+        return DeepSeekClient(apiKey: key)
+    }
+}
+
 // MARK: - 运行时协调器
 
 @MainActor
@@ -114,6 +144,7 @@ public final class AttentionQueueModel {
     private let orca: OrcaClient
     private let jumper: SessionAwareJumper?
     private let defaults: any AttentionQueueDefaultsStoring
+    private let summaryProvider: (any SummaryProviding)?
     private let now: () -> Date
 
     // 领域内核状态
@@ -133,6 +164,14 @@ public final class AttentionQueueModel {
     private(set) var ambient = AmbientOverview(entries: [])
     private(set) var ambientAvailability: AmbientAvailability = .available
     private(set) var latestOrcaSnapshot: FocusResolver.Snapshot?
+    private var latestOrcaAmbient = AmbientOverview(entries: [])
+    private var sessionSummaryCache: [String: SessionSummaryCacheEntry] = [:]
+    private var traeXOverviewEntries: [String: AmbientOverviewEntry] = [:]
+    private var summaryTasks: [String: Task<SessionOverviewDisplay, Never>] = [:]
+    private var latestOrcaPollGeneration: UInt64 = 0
+    private let summaryConcurrencyLimit = 3
+    private var activeSummaryCount = 0
+    private var summaryWaiters: [CheckedContinuation<Void, Never>] = []
 
     // 发布给 UI 的派生状态
     public private(set) var projection: AttentionQueueProjection
@@ -148,11 +187,13 @@ public final class AttentionQueueModel {
         orca: OrcaClient,
         jumper: SessionAwareJumper?,
         defaults: any AttentionQueueDefaultsStoring = UserDefaults.standard,
+        summaryProvider: (any SummaryProviding)? = SummaryProviderFactory.deepSeekFromEnvironment(),
         now: @escaping () -> Date = { Date() }
     ) {
         self.orca = orca
         self.jumper = jumper
         self.defaults = defaults
+        self.summaryProvider = summaryProvider
         self.now = now
 
         let storedInterval = defaults.double(forKey: Self.pollIntervalKey)
@@ -172,19 +213,19 @@ public final class AttentionQueueModel {
             self.store = AttentionRequestStore(snapshot: payload.snapshot, now: now())
             self.seenTraeXSessionIDs = Set(payload.seenTraeXSessionIDs)
             self.traeXSessionCWDMappings = payload.traeXSessionCWDMappings
+            self.sessionSummaryCache = payload.sessionSummaries
         } else {
             self.store = AttentionRequestStore()
             self.seenTraeXSessionIDs = []
             self.traeXSessionCWDMappings = [:]
+            self.sessionSummaryCache = [:]
         }
-
         self.projection = AttentionQueueProjection.make(
             store: AttentionRequestStore(),
             ambient: AmbientOverview(entries: []),
             now: now(),
             aiSummariesEnabled: false
         )
-
         // 启动恢复：重启前的 active 义务一律降级 stale（state needs confirmation）。
         store.apply(TraeXAttentionAdapter.staleAfterRestart(observedAt: now()))
         recomputeProjection()
@@ -198,7 +239,7 @@ public final class AttentionQueueModel {
     public func applyTraeXEvent(_ event: TraeXEvent) {
         let observedAt = now()
         let sessionID = event.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sessionIsKnown = sessionID.map { seenTraeXSessionIDs.contains($0) } ?? false
+        let sessionIsKnown = sessionID.map(isKnownTraeXSessionID) ?? false
         let result = TraeXAttentionAdapter.adapt(
             event,
             observedAt: observedAt,
@@ -211,6 +252,8 @@ public final class AttentionQueueModel {
             if let cwd = event.cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty {
                 traeXSessionCWDMappings[sessionID] = cwd
             }
+            updateTraeXOverview(event, sessionID: sessionID, observedAt: observedAt)
+            ambient = combinedOverview(applyCachedSummaries(to: latestOrcaAmbient))
         }
         for domainEvent in result.events {
             store.apply(domainEvent)
@@ -228,7 +271,10 @@ public final class AttentionQueueModel {
             supervisedSignals: [],
             observedAt: now()
         )
-        ambient = result.ambient
+        let overview = applyCachedSummaries(to: result.ambient)
+        latestOrcaAmbient = overview
+        pruneSessionSummaryCache(liveOrcaKeys: Set(overview.entries.compactMap(\.summaryCacheKey)))
+        ambient = combinedOverview(overview)
         latestOrcaSnapshot = snapshot
         ambientAvailability = .available
         recomputeProjection()
@@ -238,11 +284,405 @@ public final class AttentionQueueModel {
     public func pollOrcaOnce() async {
         do {
             let snapshot = try await orca.fetchSnapshot()
-            applyOrcaSnapshot(snapshot)
+            await applyOrcaSnapshotWithSummaries(snapshot)
         } catch {
             ambientAvailability = .unavailable
+            latestOrcaAmbient = AmbientOverview(entries: [])
+            ambient = combinedOverview(latestOrcaAmbient)
             recomputeProjection()
         }
+    }
+
+    private func applyOrcaSnapshotWithSummaries(_ snapshot: FocusResolver.Snapshot) async {
+        latestOrcaPollGeneration &+= 1
+        let generation = latestOrcaPollGeneration
+        let result = OrcaAttentionAdapter.adapt(
+            snapshot: snapshot,
+            supervisedSignals: [],
+            observedAt: now()
+        )
+        var overview = applyCachedSummaries(to: result.ambient)
+        guard generation == latestOrcaPollGeneration else { return }
+        latestOrcaAmbient = overview
+        ambient = combinedOverview(overview)
+        latestOrcaSnapshot = snapshot
+        ambientAvailability = .available
+        recomputeProjection()
+        if summaryProvider != nil {
+            await withTaskGroup(of: (Int, SessionOverviewDisplay?).self) { group in
+                for index in overview.entries.indices {
+                    let entry = overview.entries[index]
+                    guard shouldStartSummary(for: entry) else { continue }
+                    overview.entries[index].isSummaryLoading = true
+                    group.addTask { [weak self] in
+                        guard let self else { return (index, nil) }
+                        return (index, await self.summaryDisplay(for: entry))
+                    }
+                }
+                if !group.isEmpty {
+                    latestOrcaAmbient = overview
+                    ambient = combinedOverview(overview)
+                    recomputeProjection()
+                }
+                for await (index, display) in group {
+                    overview.entries[index].isSummaryLoading = false
+                    guard let display,
+                          summaryResultIsCurrent(
+                            for: overview.entries[index],
+                            in: latestOrcaAmbient
+                          )
+                    else { continue }
+                    if display.sourceConfidence == "AI summary · whitelisted structured agent payload",
+                       let cacheKey = overview.entries[index].summaryCacheKey,
+                       let fingerprint = overview.entries[index].session.summaryFingerprint {
+                        sessionSummaryCache[cacheKey] = SessionSummaryCacheEntry(
+                            fingerprint: fingerprint,
+                            display: display
+                        )
+                    }
+                    overview.entries[index].session = display
+                }
+            }
+        }
+        guard generation == latestOrcaPollGeneration else { return }
+        latestOrcaAmbient = overview
+        pruneSessionSummaryCache(liveOrcaKeys: Set(overview.entries.compactMap(\.summaryCacheKey)))
+        ambient = combinedOverview(overview)
+        latestOrcaSnapshot = snapshot
+        ambientAvailability = .available
+        recomputeProjection()
+        persist()
+    }
+
+    private func applyCachedSummaries(to overview: AmbientOverview) -> AmbientOverview {
+        AmbientOverview(entries: overview.entries.map { entry in
+            var copy = entry
+            if let key = entry.summaryCacheKey,
+               shouldUseAISummary(for: entry),
+               let cached = sessionSummaryCache[key],
+               cached.fingerprint == entry.session.summaryFingerprint {
+                copy.session = cached.display
+            }
+            return copy
+        })
+    }
+
+    private func shouldUseAISummary(for entry: AmbientOverviewEntry) -> Bool {
+        guard summaryProvider != nil,
+              entry.coverage == .structuredAgent,
+              let repo = entry.repository
+        else { return false }
+        return workspaceControls.isAISummaryEnabled(repo, globalAISummaryEnabled: true)
+    }
+
+    private func shouldStartSummary(for entry: AmbientOverviewEntry) -> Bool {
+        guard shouldUseAISummary(for: entry),
+              let cacheKey = entry.summaryCacheKey,
+              let fingerprint = entry.session.summaryFingerprint,
+              sessionSummaryCache[cacheKey]?.fingerprint != fingerprint
+        else { return false }
+        return true
+    }
+
+    private func summaryDisplay(for entry: AmbientOverviewEntry) async -> SessionOverviewDisplay? {
+        guard let provider = summaryProvider,
+              let cacheKey = entry.summaryCacheKey,
+              let fingerprint = entry.session.summaryFingerprint,
+              let context = entry.summaryContext
+        else { return nil }
+        let taskKey = "\(cacheKey):\(fingerprint)"
+        let task: Task<SessionOverviewDisplay, Never>
+        if let existing = summaryTasks[taskKey] {
+            task = existing
+        } else {
+            task = Task {
+                await self.acquireSummaryPermit()
+                defer { Task { @MainActor in self.releaseSummaryPermit() } }
+                return await Self.makeSummaryDisplay(
+                    context: context,
+                    provider: provider,
+                    fallback: entry.session
+                )
+            }
+            summaryTasks[taskKey] = task
+        }
+        let display = await task.value
+        summaryTasks[taskKey] = nil
+        guard workspaceControls.isAISummaryEnabled(
+            entry.repository ?? "",
+            globalAISummaryEnabled: true
+        ) else { return nil }
+        return display
+    }
+
+    private func acquireSummaryPermit() async {
+        if activeSummaryCount < summaryConcurrencyLimit {
+            activeSummaryCount += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            summaryWaiters.append(continuation)
+        }
+    }
+
+    private func releaseSummaryPermit() {
+        if summaryWaiters.isEmpty {
+            activeSummaryCount -= 1
+        } else {
+            summaryWaiters.removeFirst().resume()
+        }
+    }
+
+    private func summaryResultIsCurrent(
+        for entry: AmbientOverviewEntry,
+        in latestOverview: AmbientOverview
+    ) -> Bool {
+        guard shouldUseAISummary(for: entry),
+              let cacheKey = entry.summaryCacheKey,
+              let fingerprint = entry.session.summaryFingerprint,
+              let latest = latestOverview.entries.first(where: { $0.summaryCacheKey == cacheKey })
+        else { return false }
+        return entry.summaryCacheKey == cacheKey
+            && latest.session.summaryFingerprint == fingerprint
+    }
+
+    private func summarizeSession(
+        context: SummaryContext,
+        provider: any SummaryProviding,
+        fallback: SessionOverviewDisplay
+    ) async -> SessionOverviewDisplay {
+        await Self.makeSummaryDisplay(context: context, provider: provider, fallback: fallback)
+    }
+
+    nonisolated private static func makeSummaryDisplay(
+        context: SummaryContext,
+        provider: any SummaryProviding,
+        fallback: SessionOverviewDisplay
+    ) async -> SessionOverviewDisplay {
+        do {
+            let summary = try await provider.summarize(context: context)
+            return SessionOverviewDisplay(
+                currentTask: safeSummaryField(summary.currentTask, fallback: fallback.currentTask),
+                progress: safeSummaryField(summary.progress, fallback: fallback.progress),
+                nextStep: safeSummaryField(summary.nextStep, fallback: fallback.nextStep),
+                needsInput: safeSummaryField(summary.needsInput, fallback: fallback.needsInput),
+                sourceConfidence: "AI summary · whitelisted structured agent payload",
+                updatedAt: fallback.updatedAt,
+                summaryFingerprint: fallback.summaryFingerprint
+            )
+        } catch {
+            var display = fallback
+            display.sourceConfidence = "structured agent · deterministic local fallback · AI unavailable"
+            return display
+        }
+    }
+
+    nonisolated private static func safeSummaryField(_ value: String, fallback: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed != "未知",
+              trimmed.count <= AISummaryPolicy.maxDisplayCharacters
+        else { return fallback }
+        return trimmed
+    }
+
+    private func updateTraeXOverview(_ event: TraeXEvent, sessionID: String, observedAt: Date) {
+        switch event.hookEventName {
+        case TraeXEvent.userPromptSubmit:
+            guard let repo = workspaceRepo(forCWD: event.cwd) else { return }
+            traeXOverviewEntries[sessionID] = makeTraeXEntry(
+                sessionID: sessionID,
+                repo: repo,
+                cwd: event.cwd,
+                activity: .busy,
+                session: SessionOverviewDisplay(
+                    currentTask: "TraeX task submitted",
+                    progress: "Processing structured prompt.",
+                    nextStep: "Waiting for Stop.last_assistant_message.",
+                    needsInput: "无",
+                    sourceConfidence: "TraeX structured hook · deterministic local fallback · AI disabled",
+                    updatedAt: observedAt,
+                    summaryFingerprint: nil
+                ),
+                observedAt: observedAt
+            )
+            pruneTraeXOverviewEntries()
+        case TraeXEvent.stop:
+            guard let message = event.lastAssistantMessage?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !message.isEmpty,
+                  let repo = workspaceRepo(forCWD: event.cwd)
+            else { return }
+            let fingerprint = Self.stableFingerprint(message)
+            let fallback = SessionOverviewDisplay(
+                currentTask: "TraeX completed response",
+                progress: "Received complete structured reply.",
+                nextStep: "Review the latest TraeX response if needed.",
+                needsInput: "Unknown · not request",
+                sourceConfidence: summaryProvider == nil
+                    ? "TraeX structured hook · deterministic local fallback · AI disabled"
+                    : "TraeX structured hook · deterministic local fallback · AI unavailable",
+                updatedAt: observedAt,
+                summaryFingerprint: fingerprint
+            )
+            let cacheKey = Self.safeSessionCacheKey(source: "traex", identity: sessionID)
+            let context = AISummaryPolicy.makeSessionOverviewContext(
+                repo: repo,
+                branch: nil,
+                state: "complete",
+                taskLabel: "TraeX completed response",
+                toolName: nil,
+                assistantReply: message
+            )
+            var entry = makeTraeXEntry(
+                sessionID: sessionID,
+                repo: repo,
+                cwd: event.cwd,
+                activity: .idle,
+                session: fallback,
+                observedAt: observedAt,
+                summaryCacheKey: cacheKey,
+                summaryContext: context
+            )
+            if shouldUseAISummary(for: entry),
+               let cached = sessionSummaryCache[cacheKey],
+               cached.fingerprint == fingerprint {
+                entry.session = cached.display
+            }
+            traeXOverviewEntries[sessionID] = entry
+            pruneTraeXOverviewEntries()
+            if shouldUseAISummary(for: entry), let provider = summaryProvider {
+                Task { @MainActor in
+                    await summarizeTraeXSession(
+                        sessionID: sessionID,
+                        cacheKey: cacheKey,
+                        fingerprint: fingerprint,
+                        context: context,
+                        provider: provider,
+                        fallback: fallback
+                    )
+                }
+            }
+        case TraeXEvent.sessionEnd:
+            traeXOverviewEntries[sessionID] = nil
+            pruneSessionSummaryCache(liveOrcaKeys: Set(latestOrcaAmbient.entries.compactMap(\.summaryCacheKey)))
+        default:
+            break
+        }
+    }
+
+    private func summarizeTraeXSession(
+        sessionID: String,
+        cacheKey: String,
+        fingerprint: String,
+        context: SummaryContext,
+        provider: any SummaryProviding,
+        fallback: SessionOverviewDisplay
+    ) async {
+        let taskKey = "\(cacheKey):\(fingerprint)"
+        guard sessionSummaryCache[cacheKey]?.fingerprint != fingerprint else { return }
+        let task: Task<SessionOverviewDisplay, Never>
+        if let existing = summaryTasks[taskKey] {
+            task = existing
+        } else {
+            task = Task {
+                await self.acquireSummaryPermit()
+                defer { Task { @MainActor in self.releaseSummaryPermit() } }
+                return await Self.makeSummaryDisplay(context: context, provider: provider, fallback: fallback)
+            }
+            summaryTasks[taskKey] = task
+        }
+        if var entry = traeXOverviewEntries[sessionID] {
+            entry.isSummaryLoading = true
+            traeXOverviewEntries[sessionID] = entry
+            ambient = combinedOverview(applyCachedSummaries(to: latestOrcaAmbient))
+            recomputeProjection()
+        }
+        let display = await task.value
+        summaryTasks[taskKey] = nil
+        guard shouldUseAISummaryForTraeX(sessionID: sessionID, cacheKey: cacheKey, fingerprint: fingerprint) else {
+            ambient = combinedOverview(applyCachedSummaries(to: latestOrcaAmbient))
+            recomputeProjection()
+            return
+        }
+        guard display.sourceConfidence == "AI summary · whitelisted structured agent payload" else {
+            if var entry = traeXOverviewEntries[sessionID] {
+                entry.isSummaryLoading = false
+                entry.session = display
+                traeXOverviewEntries[sessionID] = entry
+                ambient = combinedOverview(applyCachedSummaries(to: latestOrcaAmbient))
+                recomputeProjection()
+            }
+            return
+        }
+        sessionSummaryCache[cacheKey] = SessionSummaryCacheEntry(fingerprint: fingerprint, display: display)
+        if var entry = traeXOverviewEntries[sessionID] {
+            entry.session = display
+            entry.isSummaryLoading = false
+            traeXOverviewEntries[sessionID] = entry
+        }
+        ambient = combinedOverview(applyCachedSummaries(to: latestOrcaAmbient))
+        recomputeProjection()
+        persist()
+    }
+
+    private func shouldUseAISummaryForTraeX(
+        sessionID: String,
+        cacheKey: String,
+        fingerprint: String
+    ) -> Bool {
+        guard let entry = traeXOverviewEntries[sessionID],
+              entry.summaryCacheKey == cacheKey,
+              entry.session.summaryFingerprint == fingerprint
+        else { return false }
+        return shouldUseAISummary(for: entry)
+    }
+
+    private func makeTraeXEntry(
+        sessionID: String,
+        repo: String,
+        cwd: String?,
+        activity: TerminalActivityStatus,
+        session: SessionOverviewDisplay,
+        observedAt: Date,
+        summaryCacheKey: String? = nil,
+        summaryContext: SummaryContext? = nil
+    ) -> AmbientOverviewEntry {
+        AmbientOverviewEntry(
+            terminalHandle: "traex-\(Self.stableFingerprint(sessionID))",
+            worktreeID: cwd.map { "traex-\(Self.stableFingerprint($0))" },
+            repository: repo,
+            branch: "TraeX",
+            title: nil,
+            connected: true,
+            lastOutputAt: observedAt,
+            isFocused: false,
+            activity: activity,
+            coverage: .structuredAgent,
+            session: session,
+            summaryCacheKey: summaryCacheKey,
+            summaryContext: summaryContext
+        )
+    }
+
+    private func combinedOverview(_ orcaOverview: AmbientOverview) -> AmbientOverview {
+        AmbientOverview(entries: orcaOverview.entries + traeXOverviewEntries.values)
+    }
+
+    private func pruneTraeXOverviewEntries() {
+        let maxEntries = 25
+        guard traeXOverviewEntries.count > maxEntries else { return }
+        let retainedSessionIDs = Set(
+            traeXOverviewEntries
+                .sorted { lhs, rhs in
+                    let left = lhs.value.session.updatedAt ?? .distantPast
+                    let right = rhs.value.session.updatedAt ?? .distantPast
+                    if left != right { return left > right }
+                    return lhs.key < rhs.key
+                }
+                .prefix(maxEntries)
+                .map(\.key)
+        )
+        traeXOverviewEntries = traeXOverviewEntries.filter { retainedSessionIDs.contains($0.key) }
     }
 
     // MARK: - 操作端
@@ -290,6 +730,29 @@ public final class AttentionQueueModel {
 
     public func setAISummaryOptIn(_ workspaceID: String, enabled: Bool) {
         workspaceControls.setAISummaryOptIn(workspaceID, enabled: enabled)
+        if !enabled {
+            sessionSummaryCache = sessionSummaryCache.filter { _, entry in
+                entry.display.sourceConfidence != "AI summary · whitelisted structured agent payload"
+            }
+            latestOrcaAmbient = OrcaAttentionAdapter.adapt(
+                snapshot: latestOrcaSnapshot ?? FocusResolver.Snapshot(worktrees: [], terminals: [], layouts: []),
+                supervisedSignals: [],
+                observedAt: now()
+            ).ambient
+            for sessionID in traeXOverviewEntries.keys {
+                guard var entry = traeXOverviewEntries[sessionID], entry.repository == workspaceID else { continue }
+                entry.isSummaryLoading = false
+                if entry.session.sourceConfidence == "AI summary · whitelisted structured agent payload" {
+                    entry.session.currentTask = "TraeX completed response"
+                    entry.session.progress = "Received complete structured reply."
+                    entry.session.nextStep = "Review the latest TraeX response if needed."
+                    entry.session.needsInput = "Unknown · not request"
+                    entry.session.sourceConfidence = "TraeX structured hook · deterministic local fallback · AI disabled"
+                }
+                traeXOverviewEntries[sessionID] = entry
+            }
+            ambient = combinedOverview(latestOrcaAmbient)
+        }
         persistControls()
         refresh()
     }
@@ -422,7 +885,9 @@ public final class AttentionQueueModel {
             ambient: ambient,
             now: currentNow,
             aiSummariesEnabled: aiSummariesEnabled,
-            ambientAvailability: ambientAvailability
+            ambientAvailability: ambientAvailability,
+            workspaceControls: workspaceControls,
+            aiSummaryProviderAvailable: summaryProvider != nil
         )
     }
 
@@ -435,6 +900,61 @@ public final class AttentionQueueModel {
               let cwd = traeXSessionCWDMappings[sessionID]
         else { return nil }
         return latestOrcaSnapshot?.worktrees.first { $0.path == cwd }?.repo
+    }
+
+    private func workspaceRepo(forCWD cwd: String?) -> String? {
+        guard let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines), !cwd.isEmpty else {
+            return nil
+        }
+        if let repo = latestOrcaSnapshot?.worktrees.first(where: { $0.path == cwd })?.repo {
+            return repo
+        }
+        return URL(fileURLWithPath: cwd).lastPathComponent
+    }
+
+    private func isKnownTraeXSessionID(_ sessionID: String) -> Bool {
+        seenTraeXSessionIDs.contains(sessionID) || traeXSessionCWDMappings[sessionID] != nil
+    }
+
+    private func pruneSessionSummaryCache(liveOrcaKeys: Set<String>) {
+        let liveTraeXKeys = Set(traeXOverviewEntries.keys.map {
+            Self.safeSessionCacheKey(source: "traex", identity: $0)
+        })
+        sessionSummaryCache = sessionSummaryCache.filter { key, _ in
+            if key.hasPrefix("orca:") {
+                return liveOrcaKeys.contains(key)
+            }
+            if key.hasPrefix("traex:") {
+                return liveTraeXKeys.contains(key)
+            }
+            return false
+        }
+        let maxTraeXCacheEntries = 25
+        let traeXKeys = sessionSummaryCache.keys.filter { $0.hasPrefix("traex:") }
+        guard traeXKeys.count > maxTraeXCacheEntries else { return }
+        let newestKeys = Set(
+            traeXKeys.sorted { lhs, rhs in
+                (sessionSummaryCache[lhs]?.display.updatedAt ?? .distantPast) >
+                    (sessionSummaryCache[rhs]?.display.updatedAt ?? .distantPast)
+            }
+            .prefix(maxTraeXCacheEntries)
+        )
+        sessionSummaryCache = sessionSummaryCache.filter { key, _ in
+            !key.hasPrefix("traex:") || newestKeys.contains(key)
+        }
+    }
+
+    nonisolated static func safeSessionCacheKey(source: String, identity: String) -> String {
+        "\(source):\(stableFingerprint(identity))"
+    }
+
+    nonisolated static func stableFingerprint(_ text: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     /// 能解析出 repo 且该 repo 被静音的 session keys（升级抑制输入）。
@@ -453,8 +973,9 @@ public final class AttentionQueueModel {
     private func persist() {
         let payload = AttentionQueueRuntimePayload(
             snapshot: store.snapshot(now: now()),
-            seenTraeXSessionIDs: seenTraeXSessionIDs.sorted(),
-            traeXSessionCWDMappings: traeXSessionCWDMappings
+            seenTraeXSessionIDs: persistentSeenTraeXSessionIDs().sorted(),
+            traeXSessionCWDMappings: persistentTraeXSessionCWDMappings(),
+            sessionSummaries: sessionSummaryCache
         )
         if let data = try? JSONEncoder().encode(payload) {
             defaults.set(data, forKey: Self.runtimeStorageKey)
@@ -469,6 +990,27 @@ public final class AttentionQueueModel {
         if let data = try? JSONEncoder().encode(snapshot) {
             defaults.set(data, forKey: Self.controlsStorageKey)
         }
+    }
+
+    private func persistentTraeXSessionCWDMappings() -> [String: String] {
+        let requestSessionIDs = persistentRequestSessionIDs()
+        return traeXSessionCWDMappings.filter { sessionID, _ in
+            requestSessionIDs.contains(sessionID)
+        }
+    }
+
+    private func persistentSeenTraeXSessionIDs() -> Set<String> {
+        seenTraeXSessionIDs.intersection(persistentRequestSessionIDs())
+    }
+
+    private func persistentRequestSessionIDs() -> Set<String> {
+        let snapshot = store.snapshot(now: now())
+        return Set((snapshot.activeRequests + snapshot.closedHistory).compactMap { request -> String? in
+            if case let .traeX(sessionID) = request.sessionKey {
+                return sessionID
+            }
+            return nil
+        })
     }
 
     static func escalationKindLabel(_ kind: AttentionRequestKind) -> String {

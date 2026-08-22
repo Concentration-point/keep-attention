@@ -285,7 +285,7 @@ import Testing
         #expect(projection.ambientAvailabilityLabel == "Orca unavailable")
         #expect(projection.collapsed == .ambient(
             title: "Orca unavailable",
-            detail: "Ambient coverage is temporarily unavailable",
+            detail: "Session Overview is temporarily unavailable",
             count: 0
         ))
     }
@@ -313,7 +313,7 @@ import Testing
         )
 
         #expect(noRequests.collapsed == .ambient(
-            title: "Ambient · 1 session",
+            title: "Session Overview · 1 session",
             detail: "1 active · 0 coverage gaps",
             count: 1
         ))

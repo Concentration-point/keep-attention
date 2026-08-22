@@ -36,6 +36,27 @@
 | Debug 构建 | `swift build` | 待填（候选构建时刷新） | |
 | Release 构建 / 打包 | `scripts/make-app.sh` | 待填 | |
 
+### 2026-08-20 Session Overview 增量证据（#36）
+
+> 本节只更新 #36 已自动化覆盖的范围；不把尚未执行的完整 M1 S1–S8 人工验收改写为 pass。
+
+| 检查 | 命令 | 结果 | 覆盖范围 |
+| --- | --- | --- | --- |
+| Session Overview / request 回归 | `swift run keep-attention-tests` | **182 tests / 18 suites 全部通过** | 排序、3/6/10 投影、AI truth 隔离、fingerprint cache、in-flight 去重、有界并发、opt-out 竞态、loading、更新时间、隐私、SessionEnd / 缺失 SessionEnd 有界清理、旧持久化兼容 |
+| Debug 构建 | `swift build` | **通过** | Core + SwiftUI action/UI 接线 |
+| Release `.app` | `scripts/make-app.sh` | **通过；Info.plist OK** | 生成本机候选 app |
+| 隔离真实 GUI | `scripts/run-gui-regression.sh` | **通过** | 受控 10-session Orca CLI fixture（生产 Process/decode 路径）+ helper -> Unix socket -> reducer -> SwiftUI；显式断言 10 条、coverage gap、disconnected、Session Overview UserPromptSubmit -> Stop、task/progress/next/update time、prompt/reply 不显示、Seen、拖动 |
+| 真实 TraeX hooks | `scripts/run-traex-hook-probe.sh` | **通过；最终统一门禁新增 5 条安全事件** | 真实 `traex` 产生 SessionStart/UserPromptSubmit/Stop/SessionEnd，并确认 Stop 含 `last_assistant_message` 字段形状；门禁要求至少 4 条，实际数量可随版本附加事件变化 |
+| 真实 DeepSeek provider probe | 临时安全探针（不落库、不打印 key/正文） | **HTTP 200；返回可被现有 `TerminalSummary` 容错解码的四字段 JSON** | 使用与 runtime 相同的 `deepseek-v4-flash`、JSON Output 和最小白名单字段；观测到 provider 可能返回 numeric progress / boolean needsInput，现有自定义 Decodable 已覆盖 |
+| 统一门禁 | `sh scripts/run-regression.sh` | **通过** | 上述单测、GUI、真实 TraeX 连续执行 |
+
+仍未由本节证明：5 秒人工理解计时，以及 #35 完整 S1–S8 release sign-off。因此本报告总 verdict 仍保持 `blocked`，#36 实现可作为候选而不能代替最终 M1 release acceptance。
+
+本机 GUI 证据（gitignored，不提交）：
+
+- `.scratch/keep-attention/acceptance/session-overview-working.png` / `.json`
+- `.scratch/keep-attention/acceptance/session-overview-done.png` / `.json`
+
 > 已知事实的范围：#29~#34 均为纯 core / adapter / UI 实现，**未接入真实 runtime 主循环**。单测覆盖 `AttentionRequestCore`、`OrcaAttentionAdapter`、`TraeXAttentionAdapter`、`AttentionQueueProjection`、`AmbientOverview`、`SessionAwareJump`、`EscalationPolicy`、`WorkspaceControls` 等确定性逻辑。自动化全绿是 M1 验收的必要条件而非充分条件。
 
 ## 3. 端到端场景矩阵结果

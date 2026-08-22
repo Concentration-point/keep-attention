@@ -9,37 +9,18 @@ private enum FloatingPanelLayout {
     static let expandedHeight: CGFloat = 560
 }
 
-/// 根坐标空间名：表面 frame 上报与窗口命中测试共用。
-private let kaRootSpace = "kaRoot"
-
-/// SwiftUI 表面实时 frame（根坐标空间，左上原点）。窗口容器据此做事件穿透。
-private struct SurfaceFramePreferenceKey: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: CGRect = .zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
-}
-
-extension View {
-    /// 把当前表面的 frame 上报给窗口容器，用于事件穿透命中测试。
-    fileprivate func reportingSurfaceFrame() -> some View {
-        background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: SurfaceFramePreferenceKey.self,
-                    value: geo.frame(in: .named(kaRootSpace))
-                )
-            }
-        )
+/// 表面 bounds 的 anchor（在根部收集时才解析，避开 GeometryReader 命名空间冷启动零值问题）。
+private struct SurfaceAnchorKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue()
     }
 }
 
 /// 把上报的表面 rect 写入窗口容器（AppKit 侧）。
 @MainActor
 private func updatePanelHitSurface(_ rect: CGRect, panel: NSPanel?) {
-    NSLog("KA-diag surfaceRect update: %@", NSStringFromRect(rect))
-    guard let container = panel?.contentView as? PanelPassthroughContentView else {
-        NSLog("KA-diag contentView is not passthrough container")
-        return
-    }
+    guard let container = panel?.contentView as? PanelPassthroughContentView else { return }
     container.surfaceRect = rect
 }
 
@@ -52,11 +33,12 @@ final class PanelPassthroughContentView: NSView {
     override var isFlipped: Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let hit = !surfaceRect.isNull && surfaceRect.insetBy(dx: -6, dy: -6).contains(point)
-        if !hit { return nil }
-        let result = super.hitTest(point)
-        NSLog("KA-diag hitTest point=%@ hit=%@ result=%@", NSStringFromPoint(point), hit ? 1 : 0, String(describing: result))
-        return result
+        // 实测：窗口事件分发传入的 contentView hitTest 点为自底向上坐标（isFlipped
+        // 不被采纳），而 SwiftUI 上报的 surfaceRect 是左上原点——先翻转到同一直坐标系。
+        let flippedPoint = CGPoint(x: point.x, y: bounds.height - point.y)
+        guard !surfaceRect.isNull,
+              surfaceRect.insetBy(dx: -6, dy: -6).contains(flippedPoint) else { return nil }
+        return super.hitTest(point)
     }
 }
 
@@ -72,27 +54,29 @@ struct AttentionQueueLiveRootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ZStack(alignment: .top) {
-            AttentionIslandSurface(
-                projection: model.projection,
-                isExpanded: expanded,
-                onToggle: { expanded.toggle() },
-                expandedContent: {
-                    AttentionQueueView(projection: model.projection, actions: liveActions)
+        GeometryReader { proxy in
+            ZStack(alignment: .top) {
+                AttentionIslandSurface(
+                    projection: model.projection,
+                    isExpanded: expanded,
+                    onToggle: { expanded.toggle() },
+                    expandedContent: {
+                        AttentionQueueView(projection: model.projection, actions: liveActions)
+                    }
+                )
+                .gesture(dragGesture)
+                .anchorPreference(key: SurfaceAnchorKey.self, value: .bounds) { $0 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .onPreferenceChange(SurfaceAnchorKey.self) { anchor in
+                guard let anchor else { return }
+                updatePanelHitSurface(proxy[anchor], panel: panel)
+            }
+            .overlay(alignment: .top) {
+                if let escalationBanner {
+                    escalationBannerView(escalationBanner)
+                        .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                 }
-            )
-            .gesture(dragGesture)
-            .reportingSurfaceFrame()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .coordinateSpace(name: kaRootSpace)
-        .onPreferenceChange(SurfaceFramePreferenceKey.self) { rect in
-            updatePanelHitSurface(rect, panel: panel)
-        }
-        .overlay(alignment: .top) {
-            if let escalationBanner {
-                escalationBannerView(escalationBanner)
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
         }
         .task { await pollOrcaForever() }
@@ -103,16 +87,7 @@ struct AttentionQueueLiveRootView: View {
 
     /// 队首请求的操作回调：绑定时才渲染 RequestActionsView；head 为 nil 时自动置空。
     private var liveActions: AttentionQueueActions {
-        var actions = AttentionQueueActions()
-        if let head = model.headRequest {
-            actions.onMarkSeen = { model.markSeen(head.key) }
-            actions.onSnooze = { until in model.snooze(head.key, until: until) }
-            actions.performJump = { await model.jump(for: head) }
-        }
-        if !model.projection.staleHistory.isEmpty {
-            actions.onDismissStale = { model.dismissStale() }
-        }
-        return actions
+        AttentionQueueActions.live(model: model)
     }
 
     /// 轻量 Orca ambient 轮询：间隔复用既有持久化设置（默认 5s）。
@@ -205,9 +180,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
+        let environment = ProcessInfo.processInfo.environment
+        let defaults = environment["KEEP_ATTENTION_DEFAULTS_SUITE"]
+            .flatMap(UserDefaults.init(suiteName:))
+            ?? UserDefaults.standard
+        let orcaBinary = environment["KEEP_ATTENTION_ORCA_BINARY"]
+            ?? OrcaClient.defaultBinaryPath
+        let orca = OrcaClient.live(binaryPath: orcaBinary)
         let queueModel = AttentionQueueModel(
-            orca: OrcaClient.live(),
-            jumper: SessionAwareJumper(client: OrcaClient.live())
+            orca: orca,
+            jumper: SessionAwareJumper(client: orca),
+            defaults: defaults
         )
         self.queueModel = queueModel
 

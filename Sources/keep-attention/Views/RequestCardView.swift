@@ -7,10 +7,10 @@ struct RequestCardView: View {
     var onJump: () -> Void = {}
     // M1 runtime 接线：可选操作回调（live root 传入，静态 preview 默认 nil 保持只读）。
     // @MainActor 闭包由 AttentionQueueView 传入后在嵌入 RequestActionsView 时统一 Task 跳回主线程。
-    var onMarkSeen: (@MainActor () -> Void)? = nil
-    var onSnooze: (@MainActor (_ until: Date) -> Void)? = nil
-    var onDismissStale: (@MainActor () -> Void)? = nil
-    var performJump: (() async -> JumpOutcome?)? = nil
+    var onMarkSeen: (@MainActor @Sendable () -> Void)? = nil
+    var onSnooze: (@MainActor @Sendable (_ until: Date) -> Void)? = nil
+    var onDismissStale: (@MainActor @Sendable () -> Void)? = nil
+    var performJump: (@MainActor @Sendable () async -> JumpOutcome?)? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -48,6 +48,8 @@ struct RequestCardView: View {
                 )
         )
         .clipShape(RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .accessibilityIdentifier(AttentionAccessibilityID.requestCard)
+        .accessibilityElement(children: .contain)
     }
 
     private var hasRuntimeActions: Bool {
@@ -71,6 +73,7 @@ struct RequestCardView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Capsule().fill(request.usesStrongSignal ? SignalGlass.amberSoft : SignalGlass.softFill))
+                .accessibilityIdentifier(AttentionAccessibilityID.requestStatus)
         }
         .padding(14)
     }
@@ -105,6 +108,7 @@ struct RequestCardView: View {
                 )
             }
             .buttonStyle(SignalGlassButtonStyle())
+            .accessibilityIdentifier(AttentionAccessibilityID.evidenceToggle)
             Spacer()
             Text(request.summarySourceLabel)
                 .font(.system(size: 9))

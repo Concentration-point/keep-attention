@@ -1,6 +1,6 @@
 # keep-attention
 
-原生 SwiftUI macOS 菜单栏/浮层工具，用 Orca 终端状态和 DeepSeek 四段式摘要帮助快速了解各终端进度。
+原生 SwiftUI macOS 注意力调度器：用 Orca / TraeX 结构化信号形成全局 Attention Queue，并在 Session Overview 中解释 3–10 个后台 agent session 的任务、进度、下一步与覆盖缺口。
 
 ## 环境要求
 
@@ -31,7 +31,25 @@ swift run keep-attention-tests
 
 该命令会逐项打印 `✔ Test ... passed`，末行打印实际执行统计，例如 `Test run with 35 tests in 6 suites passed`。
 
-界面由 `AttentionQueueModel` 运行时协调器驱动（request-centric，唯一界面）：真实 TraeX hook 事件产生 Attention Request，Orca 轮询提供 Ambient 概览，升级只在应用内 banner 呈现（不接 macOS 系统通知）。
+GUI / 真实 TraeX 回归分成两个可重复门禁：
+
+```sh
+# 发布前一键执行全部回归（推荐）
+scripts/run-regression.sh
+
+# 启动独立 /tmp 测试 app，用真实 hook helper 注入 permission/question，
+# 再用 Orca Accessibility 自动展开、点击 Seen、闭环并拖动；
+# Snooze / Jump / Restart 使用与 GUI 相同的 AttentionQueueActions 契约回归。
+scripts/run-gui-regression.sh
+
+# 必须调用命令名 traex（不是在脚本里改写为 traecli），验证项目 hooks
+# 实际产生 SessionStart / UserPromptSubmit / Stop / SessionEnd 安全事件。
+scripts/run-traex-hook-probe.sh
+```
+
+`run-gui-regression.sh` 需要 macOS Accessibility 与 Screen Recording 权限；`run-traex-hook-probe.sh` 需要真实 app-server 权限，在受限 agent sandbox 内会报 `Operation not permitted`，应在正常本机环境运行，不能据此误判 hook 失败。
+
+界面由 `AttentionQueueModel` 运行时协调器驱动（request-centric，唯一界面）：真实 TraeX lifecycle hook 产生 Attention Request；Orca `agents[]` 与 TraeX `UserPromptSubmit` / `Stop` 提供 Session Overview；升级只在应用内 banner 呈现（不接 macOS 系统通知）。
 
 ### 一键启动（推荐，自动读 env）
 
@@ -51,7 +69,7 @@ swift run keep-attention-tests
 DEEPSEEK_API_KEY=sk-... swift run keep-attention
 ```
 
-不配置 API Key 时应用仍会启动，摘要区域显示“未配置 API Key”。如果 Orca 尚未运行，浮层显示 Orca 不可用或暂无终端，不会崩溃。
+不配置 API Key 时应用仍会启动并显示本地确定性文案（`AI disabled`）。如果 Orca 尚未运行，浮层显示 Orca 不可用，不会崩溃。
 
 ### 2. 直接启动 release 二进制
 
@@ -75,16 +93,16 @@ open ./keep-attention.app
 
 ## 配置
 
-- 轮询间隔默认 5 秒，可在展开面板设置中调整并持久化到 `UserDefaults`。
+- 轮询间隔默认 5 秒；沿用 `UserDefaults` 中已有的 `pollIntervalSeconds` 配置。
 - DeepSeek 模型固定为 `deepseek-v4-flash`，请求使用 JSON Output。
-- DeepSeek 外发是显式 opt-in：未设置 `DEEPSEEK_API_KEY` 时不会调用云端总结，只显示“未配置 API Key”。
+- DeepSeek 外发是双重显式 opt-in：未设置 `DEEPSEEK_API_KEY` 或未在 Session Overview 对该 workspace 开启时都不会调用云端总结。
 
 ## 通知与控制（issue #34）
 
-设置面板（展开浮层右上角齿轮）提供以下控制，状态持久化到 `UserDefaults`（键 `notificationControls.v1`）：
+控制状态持久化到 `UserDefaults`（键 `attentionQueue.controls.v1`）：
 
-- 全局：启用通知、通知声音、动效偏好（跟随系统 / 始终降低 / 完整）、清除本地历史（清空已关闭历史，保留进行中的义务）。
-- Workspace 级：按 repo 静音（mute）；AI 摘要增强需“配置 `DEEPSEEK_API_KEY` 且该 workspace 显式 opt-in”双重满足。
+- 当前 GUI 可达的 workspace 控件：Session Overview 行的 AI 摘要开关，且仍需配置 `DEEPSEEK_API_KEY`。
+- 运行时模型还提供应用内升级开关、workspace mute 与清除本地历史 API；完整设置面板不属于当前界面。
 - Request 操作：Seen / Snooze（5 分钟、15 分钟、1 小时）/ Dismiss stale / Jump。Jump 复用 #33 SessionAwareJump，只连接状态文案，不改其 fail-closed 逻辑。
 
 中断升级判定是纯逻辑（`KeepAttentionCore.EscalationPolicy`），不接入主轮询循环：
@@ -94,21 +112,20 @@ open ./keep-attention.app
 - Stale 默认低调；只有原本强阻塞的 stale 才可发一次低频 uncertain 通知（15 分钟节流窗）。
 - AI 摘要只外发白名单最小片段（repo/branch 脱敏、kind 标签、确定性文案、安全事件标签，总长截断 1200 字符），不携带 session id、路径、标题或原始 hook payload；AI 失败时 fail-open 回退本地确定性文案。
 
-注意：macOS 通知权限/真实投递、声音播放、系统 Reduce Motion 联动、workspace mute/AI opt-in 对真实终端的效果，需在真实运行环境中人工验证；单元测试仅覆盖判定逻辑。
+注意：系统 Reduce Motion、workspace mute 与真实 DeepSeek 网络调用仍需真实运行验证；自动回归已覆盖 AI opt-in action 接线与本地 provider/failure 契约。
 
 ## DeepSeek 上下文脱敏与裁剪
 
 发送给 DeepSeek 前，应用会做本地脱敏和裁剪：
 
-- 当前 hook-only 路径只发送结构化 agent 完整回复，不发送 terminal tail。
-- 若未来使用 tail fallback，也只取最近 `40` 行，并限制外发字符数。
+- 完整结构化回复只在本地用于 fingerprint；DeepSeek 仅接收字段标签和有硬上限的 `short_status_fragment`，不发送 terminal tail、raw IDs、路径或 tool body。
 - 常见敏感内容会在本地替换：`api_key` / `access_token` / `password` 类键值、Bearer token、`sk-*` / GitHub token、邮箱、本机 `/Users/<name>/` 路径、私钥块。
 
 这只是基础防线，不等于合规审批；内部代码、日志或隐私数据是否允许外发仍应由使用者自行确认。
 
 ## TraeX hook 集成
 
-项目内置 `keep-attention-hook` helper，可通过 `.trae/hooks.json` 接收 TraeX `UserPromptSubmit` / `Stop` 事件，让当前 TraeX 请求在浮层里显示“处理中”并在完整回复后触发摘要。
+项目内置 `keep-attention-hook` helper，可通过 `.trae/cli/hooks.json` 接收 TraeX lifecycle 事件与 `UserPromptSubmit` / `Stop`，让当前 TraeX session 在 Session Overview 中显示处理中并在完整回复后更新。
 
 首次使用项目级 hook：
 
@@ -128,9 +145,9 @@ KEEP_ATTENTION_SOCKET=/tmp/keep-attention-orca-keep-attention.sock
 
 ## 当前交互能力
 
-- 收起态 pill 显示当前最需要注意的终端，并用徽标表达终端总数或等待输入数量。
-- 展开态显示所有 Orca live terminals，按 attention 排序：等待输入、有结构化结果、运行中、空闲/无 hook。
-- 点击列表行可查看对应终端详情；点击“跳转到终端”会调用 `orca terminal switch --terminal <handle> --json` 切回 Orca 对应终端。
+- 收起态有请求时显示全局队首义务；无请求时显示 Session Overview 会话数和 coverage gap 数。
+- 展开态以 Attention Queue 为主舞台；Session Overview 显示后台 session 的 task / progress / next step / input uncertainty / source / updated time，并明确标记 not request 与 coverage gap。
+- Request 支持 Seen、Snooze、Dismiss stale、session-aware Jump；只有结构化闭环证据才能 Resolved。
 
 ## 验收
 

@@ -42,6 +42,8 @@ struct AttentionQueuePillRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(AttentionAccessibilityID.pill)
+        .accessibilityLabel(title)
         .accessibilityAddTraits(.isButton)
         .onAppear { signalExpanded = true }
     }

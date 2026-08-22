@@ -72,7 +72,7 @@ public struct DeepSeekClient: SummaryProviding {
     // MARK: 请求构造
 
     static let systemPrompt = """
-    你是终端状态摘要器。根据用户提供的终端上下文（agent 消息与/或终端渲染文本），
+    你是 Agent 会话状态摘要器。根据用户提供的结构化白名单最小片段，
     严格输出一个 json 对象，且只包含这四个字段：
     {"currentTask": "当前任务", "progress": "已到哪步", "nextStep": "下一步", "needsInput": "需要用户提供什么输入"}
     规则：
@@ -82,12 +82,12 @@ public struct DeepSeekClient: SummaryProviding {
     """
 
     static func requestBody(context: SummaryContext) throws -> Data {
-        var user = "终端上下文：\n"
+        var user = "Agent 会话白名单上下文：\n"
         user += "仓库: \(context.repo)"
         if let branch = context.branch, !branch.isEmpty { user += " 分支: \(branch)" }
         if let title = context.title, !title.isEmpty { user += "\n终端标题: \(title)" }
         if let message = context.agentMessage, !message.isEmpty {
-            user += "\n\n[agent 最近消息]\n\(redactAndTruncate(message, maxCharacters: ContextExportPolicy.maxAgentMessageCharacters))"
+            user += "\n\n[结构化最小状态片段]\n\(redactAndTruncate(message, maxCharacters: AISummaryPolicy.maxPayloadCharacters))"
         }
         if !context.tail.isEmpty {
             let recent = context.tail.suffix(ContextExportPolicy.maxTailLines).joined(separator: "\n")

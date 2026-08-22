@@ -97,6 +97,8 @@ public enum AISummaryPolicy: Sendable {
     public static let maxEvidenceEventLabels = 5
     /// AI 返回后允许进入 UI 的单字段显示长度上限。
     public static let maxDisplayCharacters = 160
+    /// 完整结构化回复只在本地参与 fingerprint；云端最多收到首尾组成的短状态片段。
+    public static let maxStatusFragmentCharacters = 480
 
     /// 用白名单片段构造最小 SummaryContext：
     /// - repo / branch 先做安全分量清洗（去掉路径、反斜杠等，同 #32 投影的 safeComponent 规则）；
@@ -122,6 +124,35 @@ public enum AISummaryPolicy: Sendable {
             branch: safeComponent(branch),
             title: nil,
             agentMessage: payload.isEmpty ? nil : payload,
+            tail: []
+        )
+    }
+
+    /// Session Overview 的云端输入契约：只发送结构化字段的安全标签与一个有界短片段。
+    /// 完整 reply 只用于本地 fingerprint，不作为 transcript / body 原样外发。
+    public static func makeSessionOverviewContext(
+        repo: String?,
+        branch: String?,
+        state: String?,
+        taskLabel: String?,
+        toolName: String?,
+        assistantReply: String
+    ) -> SummaryContext {
+        let lines = [
+            "event_kind: complete_agent_reply",
+            "local_state_label: \(safeLabel(state, fallback: "unknown"))",
+            "local_task_label: \(safeLabel(taskLabel, fallback: "structured agent session"))",
+            toolName.map { "sanitized_tool_name: \(safeLabel($0, fallback: "tool"))" },
+            "short_status_fragment: \(boundedStatusFragment(assistantReply))",
+        ].compactMap { $0 }
+        return SummaryContext(
+            repo: safeComponent(repo) ?? "workspace",
+            branch: safeComponent(branch),
+            title: nil,
+            agentMessage: redactAndTruncate(
+                lines.joined(separator: "\n"),
+                maxCharacters: maxPayloadCharacters
+            ),
             tail: []
         )
     }
@@ -169,6 +200,25 @@ public enum AISummaryPolicy: Sendable {
               !value.contains("\\")
         else { return nil }
         return value
+    }
+
+    private static func safeLabel(_ value: String?, fallback: String) -> String {
+        guard let value else { return fallback }
+        let singleLine = redact(value)
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !singleLine.isEmpty,
+              !singleLine.contains("/"),
+              !singleLine.contains("\\")
+        else { return fallback }
+        return String(singleLine.prefix(80))
+    }
+
+    private static func boundedStatusFragment(_ reply: String) -> String {
+        let sanitized = redact(reply).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard sanitized.count > maxStatusFragmentCharacters else { return sanitized }
+        let edgeLength = maxStatusFragmentCharacters / 2
+        return "\(sanitized.prefix(edgeLength)) …[中间内容仅本地保留]… \(sanitized.suffix(edgeLength))"
     }
 }
 
